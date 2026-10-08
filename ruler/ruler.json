@@ -1,0 +1,89 @@
+{
+	"path_delimiter": "/",
+	"rule_groups": {
+		"(default)": {
+			"group": "(default)",
+			"rules": {
+				"Match any": {
+					"name": "Match any",
+					"regexp": ".+",
+					"enabled": true,
+					"is_default_rule": true
+				}
+			},
+			"enabled": true,
+			"is_default_group": true
+		},
+		"Configuration Files": {
+			"group": "Configuration Files",
+			"rules": {
+				"Known config files": {
+					"name": "Known config files",
+					"regexp": "(?i)^(web\\.config|(application|application\\.development|application\\.production)\\.json|)$",
+					"enabled": true,
+					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		},
+		"Credentials": {
+			"group": "Credentials",
+			"rules": {
+				"Access Credentials": {
+					"name": "Access Credentials",
+					"regexp": "(?i)(accessi|login|utenti|user|credentials|credenziali).+\\.(txt|pdf|docx|xls|xlsx)",
+					"enabled": true,
+					"is_default_rule": false
+				},
+				"KeePass": {
+					"name": "KeePass",
+					"regexp": "(?i)(\\.kdb[x]?)$",
+					"enabled": true,
+					"is_default_rule": false
+				},
+				"Passwords": {
+					"name": "Passwords",
+					"regexp": "(?i)(passw|psw|pwd).+\\.(txt|pdf|docx|xls|xlsx)$",
+					"enabled": true,
+					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		},
+		"History": {
+			"group": "History",
+			"rules": {
+				"Terminal": {
+					"name": "Terminal",
+					"regexp": "(?i)^(ConsoleHost_history\\.txt|\\.bash_history|\\.ash_history|\\.zsh_history)$",
+					"enabled": true,
+					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		},
+		"Mozilla": {
+			"group": "Mozilla",
+			"rules": {
+				"Key DB": {
+					"name": "Key DB",
+					"regexp": "(?i)^(key[3-4]\\.db)$",
+					"enabled": true,
+					"is_default_rule": false
+				},
+				"Logins": {
+					"name": "Logins",
+					"regexp": "(?i)^(logins\\.json|signons\\.sqlite)$",
+					"enabled": true,
+					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		}
+	},
+	"match_any_if_no_rules_exist": true
+}
