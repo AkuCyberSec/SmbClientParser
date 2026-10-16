@@ -2,6 +2,7 @@ package smbclientparser
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -42,6 +43,13 @@ func (f *FileParser) printCurrentParsingStatus(row []byte) {
 	}
 }
 
+// Progress returns the parsing progress in percent (0-100).
+func (f *FileParser) Progress() float64 {
+	f.parsingStatusMu.Lock()
+	defer f.parsingStatusMu.Unlock()
+	return f.lastPerc
+}
+
 func newFileParser(smbClientParser *SmbClientParser, parsingRuler *parsingruler.ParsingRuler) *FileParser {
 	return &FileParser{
 		smbClientParser: smbClientParser,
@@ -56,7 +64,9 @@ func newFileParser(smbClientParser *SmbClientParser, parsingRuler *parsingruler.
 // For example: smbclient //172.16.0.5/users | tee smbclient_out.txt
 //
 // sharePath would be: //172.16.0.5/users.
-func (f *FileParser) Parse(filePath string, sharePath string) error {
+//
+// ctx is meant for cancellation (not implemented yet).
+func (f *FileParser) Parse(ctx context.Context, filePath string, sharePath string) error {
 	var threadId int = 0
 	log.
 		Info().
@@ -65,6 +75,7 @@ func (f *FileParser) Parse(filePath string, sharePath string) error {
 	if err != nil {
 		return err
 	}
+	defer fHandle.Close()
 	fInfo, err := fHandle.Stat()
 	if err != nil {
 		return err

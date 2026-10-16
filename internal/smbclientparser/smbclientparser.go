@@ -2,6 +2,7 @@ package smbclientparser
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ type SmbClientParser struct {
 	Directories map[string]*smbclientresource.SmbClientDir `json:"directories"`
 
 	parsingRuler *parsingruler.ParsingRuler
+	fileParser   *FileParser
 	rootDir      *smbclientresource.SmbClientDir
 	// Track all the entries that are folders so that we can easily link the "directory"
 	folders map[string]*smbclientresource.SmbClientFolder
@@ -46,6 +48,7 @@ func New(filePath string, server string, shareName string, parsingRuler *parsing
 		folders:      make(map[string]*smbclientresource.SmbClientFolder),
 		parsingRuler: parsingRuler,
 	}
+	s.fileParser = newFileParser(s, parsingRuler)
 
 	server = parsingRuler.NormalizePath(server)
 	shareName = parsingRuler.NormalizePath(shareName)
@@ -109,12 +112,17 @@ func (s *SmbClientParser) AddEntry(entry smbclientresource.SmbClientEntry, match
 	}
 }
 
-func (s *SmbClientParser) Parse() error {
-	fileParser := newFileParser(s, s.parsingRuler)
-	if err := fileParser.Parse(s.FilePath, s.rootDir.GetFullPath()); err != nil {
+// ctx is meant for cancellation (not implemented yet).
+func (s *SmbClientParser) Parse(ctx context.Context) error {
+	if err := s.fileParser.Parse(ctx, s.FilePath, s.rootDir.GetFullPath()); err != nil {
 		return err
 	}
 	return nil
+}
+
+// Progress returns the parsing progress in percent (0-100).
+func (s *SmbClientParser) Progress() float64 {
+	return s.fileParser.Progress()
 }
 
 // Remove all empty directories from s.Directories.
@@ -130,11 +138,11 @@ func (s *SmbClientParser) Finalize() *SmbClientParser {
 
 	for _, folder := range s.folders {
 		dir, ok := s.Directories[folder.GetFullPath()]
-		if dir.IsEmpty() {
-			continue
-		}
 		if !ok {
 			log.Error().Str("folder_name", folder.Name).Str("full_path", folder.GetFullPath()).Msg("unexpected error: folder not contained in s.Directories")
+			continue
+		}
+		if dir.IsEmpty() {
 			continue
 		}
 		folder.SetDirectory(dir)
@@ -154,6 +162,7 @@ func (s *SmbClientParser) ExportJson(outFile string) error {
 	if err != nil {
 		return err
 	}
+	defer handle.Close()
 	encoder := json.NewEncoder(handle)
 	encoder.SetIndent("", "	")
 	if err := encoder.Encode(s); err != nil {
@@ -177,6 +186,7 @@ func (s *SmbClientParser) ExportGrouped(outFile string, showGroupName, showRuleN
 	if err != nil {
 		return err
 	}
+	defer handle.Close()
 
 	wr := bufio.NewWriter(handle)
 

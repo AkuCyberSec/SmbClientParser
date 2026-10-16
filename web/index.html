@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SmbClientParser</title>
+    <link rel="stylesheet" href="css/app.css" />
+    <!-- Sets the theme before the page is drawn (no flash of the wrong colors) -->
+    <script src="js/theme.js"></script>
+    <script type="module" src="js/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="app-header">
+      <span class="brand">SmbClientParser</span>
+      <nav class="tabs" aria-label="Sections">
+        <a href="#runs">Runs</a>
+        <a href="#results">Results</a>
+        <a href="#rules">Rules</a>
+        <a href="#files">Files</a>
+        <a href="#activity">Activity</a>
+      </nav>
+      <span id="run-indicator" class="badge" aria-live="polite">Idle</span>
+      <button id="theme-toggle" type="button" class="button ghost icon-only" aria-label="Switch to dark theme" title="Switch theme">
+        <span data-icon="moon"></span>
+      </button>
+      <button id="sign-out" type="button" class="button ghost icon-only" aria-label="Sign out" title="Sign out">
+        <span data-icon="logOut"></span>
+      </button>
+    </header>
+
+    <main id="main">
+      <!-- Runs: new run form + queue and history -->
+      <section id="tab-runs" class="tab-content" aria-labelledby="runs-title" hidden>
+        <h1 id="runs-title" class="visually-hidden">Runs</h1>
+        <div class="two-columns">
+          <form id="run-form" class="panel" novalidate>
+            <div class="panel-header"><h2>New run</h2></div>
+            <div class="panel-body stack">
+              <div class="field">
+                <label for="run-input">Input file (smbclient output)</label>
+                <input id="run-input" class="input mono" name="input_file" required autocomplete="off" placeholder="/home/user/smbclient_out.txt" />
+                <div class="row">
+                  <button id="run-pick-upload" type="button" class="button small">
+                    <span data-icon="folderOpen"></span>Choose from uploads
+                  </button>
+                  <button id="run-upload" type="button" class="button small"><span data-icon="upload"></span>Upload file</button>
+                  <input id="run-upload-input" type="file" hidden />
+                </div>
+                <div id="run-upload-progress" class="stack" hidden>
+                  <div class="progress"><div class="progress-bar"></div></div>
+                  <p class="field-hint" aria-live="polite"></p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="run-server">Server</label>
+                  <input id="run-server" class="input" name="server" required autocomplete="off" placeholder="172.16.0.5" />
+                </div>
+                <div class="field">
+                  <label for="run-share">Share</label>
+                  <input id="run-share" class="input" name="share" required autocomplete="off" placeholder="Shared" />
+                </div>
+                <div class="field">
+                  <label for="run-delimiter">Delimiter</label>
+                  <select id="run-delimiter" class="select" name="path_delimiter">
+                    <option value="/">/</option>
+                    <option value="\">\</option>
+                  </select>
+                </div>
+              </div>
+              <p id="run-form-error" class="field-error" role="alert"></p>
+              <div class="row">
+                <button type="submit" class="button primary"><span data-icon="play"></span>Add to queue</button>
+                <span class="field-hint">The run uses a copy of the current rules: later edits won't change it.</span>
+              </div>
+            </div>
+          </form>
+
+          <section class="panel" aria-labelledby="queue-title">
+            <div class="panel-header"><h2 id="queue-title">Queue and history</h2></div>
+            <div class="panel-body">
+              <ul id="run-list" class="run-list"></ul>
+              <p id="run-list-empty" class="empty-state">No runs yet. Fill in the form to start the first one.</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- Results: sidebar with groups and rules + table -->
+      <section id="tab-results" class="tab-content" aria-labelledby="results-title" hidden>
+        <div class="row results-toolbar">
+          <h1 id="results-title" class="grow">Results</h1>
+          <label for="results-run" class="label">Run</label>
+          <select id="results-run" class="select auto-width"></select>
+        </div>
+        <div id="results-outdated" class="banner warning" role="status" hidden>
+          <span data-icon="alert"></span>
+          <span class="banner-text">Rules changed after this run started: these results may be outdated.</span>
+          <button id="results-run-again" type="button" class="button small">Run again with current rules</button>
+        </div>
+        <p id="results-empty" class="empty-state">No results yet. Results appear here when a run finishes.</p>
+
+        <div id="results-content" class="results-layout" hidden>
+          <nav class="panel" aria-label="Filter by group and rule">
+            <ul id="results-groups" class="match-list"></ul>
+          </nav>
+          <div class="panel">
+            <div class="panel-header">
+              <div class="grow row filter-group">
+                <label for="results-filter" class="visually-hidden">Filter paths</label>
+                <input id="results-filter" class="input grow" type="search" placeholder="Filter paths (e.g. password)" autocomplete="off" />
+              </div>
+              <span class="label">Export all</span>
+              <button type="button" class="button small" data-export="txt"><span data-icon="download"></span>TXT</button>
+              <button type="button" class="button small" data-export="csv"><span data-icon="download"></span>CSV</button>
+              <button type="button" class="button small" data-export="json"><span data-icon="download"></span>JSON</button>
+            </div>
+            <div class="table-wrapper">
+              <table class="table">
+                <caption id="results-caption" class="visually-hidden">Matches</caption>
+                <thead>
+                  <tr id="results-head"></tr>
+                </thead>
+                <tbody id="results-body"></tbody>
+              </table>
+            </div>
+            <p id="results-no-match" class="empty-state" hidden>Nothing matches the current filters.</p>
+            <div class="pagination">
+              <span id="results-summary" class="grow muted" aria-live="polite"></span>
+              <button id="results-first" type="button" class="button small icon-only" aria-label="First page" title="First page"><span data-icon="chevronsLeft"></span></button>
+              <button id="results-previous" type="button" class="button small icon-only" aria-label="Previous page" title="Previous page"><span data-icon="chevronLeft"></span></button>
+              <span id="results-page" class="muted"></span>
+              <button id="results-next" type="button" class="button small icon-only" aria-label="Next page" title="Next page"><span data-icon="chevronRight"></span></button>
+              <button id="results-last" type="button" class="button small icon-only" aria-label="Last page" title="Last page"><span data-icon="chevronsRight"></span></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Rules: ruler file, settings, tester, groups and rules -->
+      <section id="tab-rules" class="tab-content" aria-labelledby="rules-title" hidden>
+        <h1 id="rules-title" class="visually-hidden">Rules</h1>
+        <section class="panel" aria-label="Ruler file">
+          <div class="panel-header">
+            <div class="grow stack">
+              <span class="label">Ruler file</span>
+              <span id="ruler-path" class="path"></span>
+            </div>
+            <span id="ruler-dirty" class="badge warning" hidden>Unsaved changes</span>
+            <button id="ruler-save" type="button" class="button primary"><span data-icon="save"></span>Save</button>
+            <button id="ruler-export" type="button" class="button"><span data-icon="download"></span>Download a copy</button>
+          </div>
+          <div id="ruler-no-path" class="panel-body" hidden>
+            <div class="banner warning">
+              <span data-icon="alert"></span>
+              <span class="banner-text">No ruler file is defined (the program was started without -ruler). Your changes are kept in memory until you save them to a file or download a copy.</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="two-columns">
+          <section class="panel" aria-labelledby="ruler-settings-title">
+            <div class="panel-header"><h2 id="ruler-settings-title">Settings</h2></div>
+            <div class="panel-body stack">
+              <div class="field">
+                <label for="ruler-delimiter">Path delimiter</label>
+                <select id="ruler-delimiter" class="select">
+                  <option value="/">/</option>
+                  <option value="\">\</option>
+                </select>
+                <span class="field-hint">Saved with the rules. Each run can override it.</span>
+              </div>
+              <p class="field-hint">
+                Rules are checked in the order shown (groups and rules sorted by name): the first enabled rule that matches wins.
+              </p>
+            </div>
+          </section>
+
+          <form id="ruler-test" class="panel" novalidate>
+            <div class="panel-header"><h2>Test a name</h2></div>
+            <div class="panel-body stack">
+              <div class="field">
+                <label for="ruler-test-name">File or folder name</label>
+                <div class="row">
+                  <input id="ruler-test-name" class="input mono grow" required autocomplete="off" placeholder="passwords.xlsx" />
+                  <button type="submit" class="button"><span data-icon="search"></span>Test</button>
+                </div>
+              </div>
+              <p id="ruler-test-result" aria-live="polite"></p>
+            </div>
+          </form>
+        </div>
+
+        <section class="panel" aria-labelledby="groups-title">
+          <div class="panel-header">
+            <h2 id="groups-title">Groups and rules</h2>
+            <button id="ruler-add-group" type="button" class="button"><span data-icon="plus"></span>Add group</button>
+          </div>
+          <ul id="group-list" class="group-list"></ul>
+        </section>
+      </section>
+
+      <!-- Files: upload and download folders -->
+      <section id="tab-files" class="tab-content" aria-labelledby="files-title" hidden>
+        <h1 id="files-title" class="visually-hidden">Files</h1>
+        <section class="panel" aria-labelledby="uploads-title">
+          <div class="panel-header">
+            <h2 id="uploads-title">Uploads</h2>
+            <button id="uploads-upload" type="button" class="button primary"><span data-icon="upload"></span>Upload file</button>
+            <input id="uploads-upload-input" type="file" hidden />
+            <button id="uploads-refresh" type="button" class="button icon-only" aria-label="Refresh uploads" title="Refresh"><span data-icon="refresh"></span></button>
+          </div>
+          <div class="panel-body stack">
+            <p id="uploads-hint" class="muted"></p>
+            <div id="uploads-progress" class="stack" hidden>
+              <div class="progress"><div class="progress-bar"></div></div>
+              <p class="field-hint" aria-live="polite"></p>
+            </div>
+          </div>
+          <div id="uploads-files" class="table-wrapper"></div>
+        </section>
+
+        <section class="panel" aria-labelledby="downloads-title">
+          <div class="panel-header">
+            <h2 id="downloads-title">Downloads</h2>
+            <button id="downloads-refresh" type="button" class="button icon-only" aria-label="Refresh downloads" title="Refresh"><span data-icon="refresh"></span></button>
+          </div>
+          <div class="panel-body">
+            <p id="downloads-hint" class="muted"></p>
+          </div>
+          <div id="downloads-files" class="table-wrapper"></div>
+        </section>
+      </section>
+
+      <!-- Activity: what the server did, also while the browser was closed -->
+      <section id="tab-activity" class="tab-content" aria-labelledby="activity-title" hidden>
+        <h1 id="activity-title" class="visually-hidden">Activity</h1>
+        <div class="two-columns">
+          <section class="panel" aria-labelledby="events-title">
+            <div class="panel-header"><h2 id="events-title">Events</h2><span class="muted small">Newest first</span></div>
+            <ul id="event-list" class="event-list"></ul>
+          </section>
+          <section class="panel" aria-labelledby="server-log-title">
+            <div class="panel-header"><h2 id="server-log-title">Server log</h2><span class="muted small">Latest lines</span></div>
+            <pre id="server-log" class="server-log" tabindex="0"></pre>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <!-- Shared dialog, filled by openDialog() in js/ui.js -->
+    <dialog id="dialog" class="dialog" aria-labelledby="dialog-title">
+      <form method="dialog">
+        <h2 id="dialog-title" class="dialog-title"></h2>
+        <div class="dialog-body"></div>
+        <div class="dialog-buttons"></div>
+      </form>
+    </dialog>
+
+    <div id="toasts" class="toasts"></div>
+  </body>
+</html>

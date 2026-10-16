@@ -3,6 +3,7 @@ package parsingruler
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"slices"
@@ -26,21 +27,22 @@ const (
 	DefaultParsingRuleExpr  string = `.+`
 
 	EnableGroup  bool = true
-	DisableGroup bool = true
+	DisableGroup bool = false
 	EnableRule   bool = true
-	DisableRule  bool = true
+	DisableRule  bool = false
 
 	EnableMatchAnyIfNoRulesExist  bool = true
 	DisableMatchAnyIfNoRulesExist bool = false
 )
 
 type ParsingRuleGroup struct {
-	Name            string                  `json:"group"`
-	Rules           map[string]*ParsingRule `json:"rules"`
-	Enabled         bool                    `json:"enabled"`
-	IsDefaultGroup  bool                    `json:"is_default_group"`
-	sortedRuleNames []string
-	mu              sync.Mutex
+	Name                   string                  `json:"group"`
+	Rules                  map[string]*ParsingRule `json:"rules"`
+	Enabled                bool                    `json:"enabled"`
+	IsDefaultGroup         bool                    `json:"is_default_group"`
+	sortedRuleNames        []string
+	ruleNamesAlreadySorted bool
+	mu                     sync.Mutex
 }
 type ParsingRule struct {
 	Name                    string `json:"name"`
@@ -57,7 +59,8 @@ type ParsingRuler struct {
 	PathDelimiter PathDelimiter                `json:"path_delimiter"`
 	RuleGroups    map[string]*ParsingRuleGroup `json:"rule_groups"`
 
-	sortedGroupNames []string
+	sortedGroupNames        []string
+	groupNamesAlreadySorted bool
 	// This value is used only on startup.
 	// To enable or disable the "Match Any" behavior, use EnableDefaultRule() or DisableDefaultRule()
 	//
@@ -73,6 +76,7 @@ func (p *ParsingRuler) ExportJson(outFile string) error {
 	if err != nil {
 		return err
 	}
+	defer handle.Close()
 	encoder := json.NewEncoder(handle)
 	encoder.SetIndent("", "	")
 	if err := encoder.Encode(p); err != nil {
@@ -86,8 +90,14 @@ func Load(inFile string) (*ParsingRuler, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer handle.Close()
+	return LoadFromReader(handle)
+}
+
+// LoadFromReader builds a ruler from JSON (same format as ruler.json).
+func LoadFromReader(reader io.Reader) (*ParsingRuler, error) {
 	ruler := &ParsingRuler{}
-	if err := json.NewDecoder(handle).Decode(ruler); err != nil {
+	if err := json.NewDecoder(reader).Decode(ruler); err != nil {
 		return nil, err
 	}
 
@@ -139,6 +149,7 @@ func New(pathDelimiter PathDelimiter, matchAnyIfNoRulexExist bool) *ParsingRuler
 			MatchAnyIfNoRulesExist: matchAnyIfNoRulexExist,
 		}
 		r.addDefaultGroup()
+		r.EnableDefaultRule()
 		return r
 	default:
 		log.Fatal().Str("path_delimiter", string(pathDelimiter)).Msg("fatal error: invalid path delimiter")
@@ -222,7 +233,15 @@ func (p *ParsingRuler) IsRowEntry(row string) (smbclientresource.SmbClientEntry,
 	sizeStr := matches[idSize]
 	size, _ := strconv.ParseInt(sizeStr, 10, 64)
 
-	entry := smbclientresource.NewSmbClientEntry(p.NormalizePath(name), attr, size, "")
+	// Same format smbclient prints, e.g. "Wed Sep 23 19:42:55 2026"
+	timestamp := fmt.Sprintf("%s %s %s %s %s",
+		matches[resourceFileExp.SubexpIndex(CapturingGroupResourceModificationDateDayStr)],
+		matches[resourceFileExp.SubexpIndex(CapturingGroupResourceModificationDateMonth)],
+		matches[resourceFileExp.SubexpIndex(CapturingGroupResourceModificationDateDay)],
+		matches[resourceFileExp.SubexpIndex(CapturingGroupResourceModificationDateTime)],
+		matches[resourceFileExp.SubexpIndex(CapturingGroupResourceModificationDateYear)])
+
+	entry := smbclientresource.NewSmbClientEntry(p.NormalizePath(name), attr, size, timestamp)
 	return entry, true
 }
 
@@ -241,20 +260,56 @@ func (p *ParsingRuler) IsRowDir(row string) (*smbclientresource.SmbClientDir, bo
 
 }
 
+// Returns true if and only if the group has at least one enabled rule
+func (p *ParsingRuleGroup) AnyRuleEnabled() bool {
+	for _, rule := range p.Rules {
+		if rule.IsDefaultRule {
+			continue
+		}
+		if rule.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// Returns true if and only if at least one enabled group has at least one enabled rule
+func (p *ParsingRuler) AnyRuleGroupEnabled() bool {
+	for _, grp := range p.RuleGroups {
+		if grp.IsDefaultGroup {
+			continue
+		}
+		if !grp.Enabled {
+			continue
+		}
+		if grp.AnyRuleEnabled() {
+			return true
+		}
+	}
+	return false
+}
 func (p *ParsingRuler) MatchRule(val string) (matchedRule *ParsingRule, matched bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	ignoreDefaultRule := len(p.RuleGroups) > 1
+	ignoreDefaultRule := p.AnyRuleGroupEnabled()
 
-	for _, grp := range p.RuleGroups {
+	for _, grpName := range p.GetSortedRuleGroupNames() {
+		grp, ok := p.RuleGroups[grpName]
+		if !ok {
+			log.Fatal().Str("group_name", grpName).Msg("fatal error: group name doesn't exist in RuleGroups")
+		}
 		if !grp.Enabled {
 			continue
 		}
 		if grp.IsDefaultGroup && ignoreDefaultRule {
 			continue
 		}
-		for _, rule := range grp.Rules {
+		for _, ruleName := range grp.GetSortedRuleNames() {
+			rule, ok := grp.Rules[ruleName]
+			if !ok {
+				log.Fatal().Str("rule_name", ruleName).Msg("fatal error: rule name doesn't exist in Rules")
+			}
 			if !rule.Enabled {
 				continue
 			}
@@ -276,6 +331,7 @@ func (p *ParsingRuler) EnableDefaultRule() {
 		log.Fatal().Msg("fatal error: defaultRuleGroup cannot be nil")
 	}
 	p.defaultRuleGroup.Enabled = true
+	p.defaultRuleGroup.EnableRule(DefaultParsingRuleName)
 }
 func (p *ParsingRuler) DisableDefaultRule() {
 	p.mu.Lock()
@@ -285,6 +341,7 @@ func (p *ParsingRuler) DisableDefaultRule() {
 		log.Fatal().Msg("fatal error: defaultRuleGroup cannot be nil")
 	}
 	p.defaultRuleGroup.Enabled = false
+	p.defaultRuleGroup.DisableRule(DefaultParsingRuleName)
 }
 func (p *ParsingRuler) AddRuleGroup(name string, enabled bool) *ParsingRuleGroup {
 	p.mu.Lock()
@@ -313,7 +370,11 @@ func (p *ParsingRuler) DisableGroup(name string) {
 	p.enableDisableGroup(name, DisableGroup)
 }
 func (p *ParsingRuler) GetSortedRuleGroupNames() []string {
+	if p.groupNamesAlreadySorted {
+		return p.sortedGroupNames
+	}
 	slices.Sort(p.sortedGroupNames)
+	p.groupNamesAlreadySorted = true
 	return p.sortedGroupNames
 }
 func (p *ParsingRuler) addDefaultGroup() {
@@ -334,10 +395,12 @@ func (p *ParsingRuler) addRuleGroup(name string, enabled bool) *ParsingRuleGroup
 	}
 	grp = newParsingRuleGroup(name, enabled)
 	p.RuleGroups[name] = grp
+	p.defaultRuleGroup = grp
 	if p.sortedGroupNames == nil {
 		p.sortedGroupNames = make([]string, 0)
 	}
 	p.sortedGroupNames = append(p.sortedGroupNames, name)
+	p.groupNamesAlreadySorted = false
 	return grp
 }
 func (p *ParsingRuler) deleteRuleGroup(name string) {
@@ -349,6 +412,7 @@ func (p *ParsingRuler) deleteRuleGroup(name string) {
 	for ruleGroupName := range p.RuleGroups {
 		p.sortedGroupNames = append(p.sortedGroupNames, ruleGroupName)
 	}
+	p.groupNamesAlreadySorted = false
 }
 func (p *ParsingRuler) enableDisableGroup(name string, val bool) {
 	grp, ok := p.RuleGroups[name]
@@ -395,7 +459,11 @@ func (p *ParsingRuleGroup) SetExpression(ruleName string, expr string) {
 	rule.Expression = expr
 }
 func (p *ParsingRuleGroup) GetSortedRuleNames() []string {
+	if p.ruleNamesAlreadySorted {
+		return p.sortedRuleNames
+	}
 	slices.Sort(p.sortedRuleNames)
+	p.ruleNamesAlreadySorted = true
 	return p.sortedRuleNames
 }
 func (p *ParsingRuleGroup) AnyMatch() bool {
@@ -419,6 +487,7 @@ func (p *ParsingRuleGroup) addRule(name string, expr string, enabled bool) *Pars
 		p.sortedRuleNames = make([]string, 0)
 	}
 	p.sortedRuleNames = append(p.sortedRuleNames, name)
+	p.ruleNamesAlreadySorted = false
 	return rule
 }
 func (p *ParsingRuleGroup) deleteRule(name string) {
@@ -430,6 +499,7 @@ func (p *ParsingRuleGroup) deleteRule(name string) {
 	for ruleName := range p.Rules {
 		p.sortedRuleNames = append(p.sortedRuleNames, ruleName)
 	}
+	p.ruleNamesAlreadySorted = false
 }
 func (p *ParsingRuleGroup) enableDisableRule(name string, val bool) {
 	rule, ok := p.Rules[name]

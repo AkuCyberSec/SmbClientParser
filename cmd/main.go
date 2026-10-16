@@ -1,7 +1,7 @@
 package main
 
 import (
-	"embed"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -15,9 +15,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// embed ../web/*
-var webFS embed.FS
-
 type Parameters struct {
 	rulerPath              string
 	ruler                  *parsingruler.ParsingRuler
@@ -29,9 +26,16 @@ type Parameters struct {
 	matchAnyIfNoRulesExist bool
 	localAddress           string
 	localPort              int
+
+	// Web mode only
+	webKey            string
+	sessionExpiration int // minutes, 0 means never
+	uploadFolder      string
+	downloadFolder    string
+	keepRuns          int
 }
 
-func initializeLogger(level zerolog.Level) {
+func initializeLogger(level zerolog.Level, keepLogLines bool) {
 	writer := zerolog.ConsoleWriter{
 		Out: os.Stdout,
 	}
@@ -44,19 +48,29 @@ func initializeLogger(level zerolog.Level) {
 		return fmt.Sprintf("[%02d/%02d/%d %02d:%02d:%02d]", timestamp.Day(), timestamp.Month(), timestamp.Year(), timestamp.Local().Hour(), timestamp.Local().Minute(), timestamp.Local().Second())
 	}
 
-	multi := io.MultiWriter(writer)
+	writers := []io.Writer{writer}
+	if keepLogLines {
+		// In web mode the latest log lines are also shown in the browser (Activity tab)
+		bufferWriter := writer
+		bufferWriter.Out = serverLog
+		bufferWriter.NoColor = true
+		writers = append(writers, bufferWriter)
+	}
+
+	multi := io.MultiWriter(writers...)
 	log.Logger = zerolog.New(multi).With().Timestamp().Logger().Level(level)
 }
 
 func run(params Parameters) {
 	if err := params.validate(); err != nil {
 		log.Warn().Err(err).Msg("invalid parameter")
+		return
 	}
 
 	now := time.Now()
 	parser := smbclientparser.New(params.inputFile, params.serverName, params.shareName, params.ruler)
 
-	if err := parser.Parse(); err != nil {
+	if err := parser.Parse(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("fatal error")
 	}
 
@@ -97,13 +111,6 @@ func (p *Parameters) validate() error {
 
 var interactiveRegexp = regexp.MustCompile(`^(?i)(?P<command>run|exit|set|get|help|show params){1}( ?P<param1>(ruler|input|server|share|output|path-delimiter|match-any-by-default|log-level))?( ?P<param2>.+)$`)
 
-// Run in web mode by starting an HTTP server locally.
-//
-// This is the only mode made by AI (Claude Code).
-func runHttpServer(params Parameters) {
-
-}
-
 func main() {
 
 	webMode := flag.Bool("web", false, "If true, enter web mode")
@@ -117,6 +124,11 @@ func main() {
 	outputFile := flag.String("output", "parsed_output.txt", "Output file")
 	pathDelimiter := flag.String("path-delimiter", "/", "Path delimiter to use for output file only (/ or \\)")
 	matchAnyIfNoRulesExist := flag.Bool("match-any-by-default", false, "If true, match any entry if and only if when no rules have been defined (used when ruler file is not defined)")
+	webKey := flag.String("web-key", "", fmt.Sprintf("Web mode: access key to sign in (can also be set with the %s environment variable). If empty, a random key is generated and printed at startup", webKeyEnvVariable))
+	sessionExpiration := flag.Int("session-expiration", 60, "Web mode: minutes of inactivity before a session expires (0: never)")
+	uploadFolder := flag.String("upload-folder", "uploads", "Web mode: folder for smbclient outputs uploaded from the browser (created if missing)")
+	downloadFolder := flag.String("download-folder", "downloads", "Web mode: folder where exported files are saved (created if missing)")
+	keepRuns := flag.Int("keep-runs", 5, "Web mode: number of past runs whose results are kept in memory")
 	loggingLevel := flag.Int("log-level", 1, "Logging level from -1 to 6 (-1: Trace, 0: Debug, 1: Info (default), 2: Warning, 3: Error, 4: Fatal, 5: Panic, 6: Disabled)")
 	flag.Parse()
 
@@ -130,9 +142,14 @@ func main() {
 		matchAnyIfNoRulesExist: *matchAnyIfNoRulesExist,
 		localAddress:           *httpLocalAddr,
 		localPort:              *httpLocalPort,
+		webKey:                 *webKey,
+		sessionExpiration:      *sessionExpiration,
+		uploadFolder:           *uploadFolder,
+		downloadFolder:         *downloadFolder,
+		keepRuns:               *keepRuns,
 	}
 
-	initializeLogger(zerolog.Level(*loggingLevel))
+	initializeLogger(zerolog.Level(*loggingLevel), *webMode)
 
 	var ruler *parsingruler.ParsingRuler
 	if params.rulerPath == "" {
