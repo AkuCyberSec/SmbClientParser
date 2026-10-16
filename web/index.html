@@ -53,6 +53,11 @@
                   <p class="field-hint" aria-live="polite"></p>
                 </div>
               </div>
+              <div class="field">
+                <label for="run-ruler">Rules</label>
+                <select id="run-ruler" class="select"></select>
+                <span id="run-ruler-hint" class="field-hint path"></span>
+              </div>
               <div class="form-grid">
                 <div class="field">
                   <label for="run-server">Server</label>
@@ -73,13 +78,21 @@
               <p id="run-form-error" class="field-error" role="alert"></p>
               <div class="row">
                 <button type="submit" class="button primary"><span data-icon="play"></span>Add to queue</button>
-                <span class="field-hint">The run uses a copy of the current rules: later edits won't change it.</span>
+                <span class="field-hint">The run uses a copy of the chosen rules: later edits won't change it.</span>
               </div>
             </div>
           </form>
 
           <section class="panel" aria-labelledby="queue-title">
-            <div class="panel-header"><h2 id="queue-title">Queue and history</h2></div>
+            <div class="panel-header">
+              <h2 id="queue-title" tabindex="-1">Queue and history</h2>
+              <button id="runs-delete-selected" type="button" class="button small" disabled>
+                <span data-icon="trash"></span>Delete selected<span id="runs-selected-count" class="badge info" hidden></span>
+              </button>
+              <button id="runs-delete-finished" type="button" class="button small" disabled>
+                <span data-icon="trash"></span>Delete all finished
+              </button>
+            </div>
             <div class="panel-body">
               <ul id="run-list" class="run-list"></ul>
               <p id="run-list-empty" class="empty-state">No runs yet. Fill in the form to start the first one.</p>
@@ -94,6 +107,7 @@
           <h1 id="results-title" class="grow">Results</h1>
           <label for="results-run" class="label">Run</label>
           <select id="results-run" class="select auto-width"></select>
+          <button id="results-delete" type="button" class="button small"><span data-icon="trash"></span>Delete run</button>
         </div>
         <div id="results-outdated" class="banner warning" role="status" hidden>
           <span data-icon="alert"></span>
@@ -109,17 +123,71 @@
           <div class="panel">
             <div class="panel-header">
               <div class="grow row filter-group">
-                <label for="results-filter" class="visually-hidden">Filter paths</label>
-                <input id="results-filter" class="input grow" type="search" placeholder="Filter paths (e.g. password)" autocomplete="off" />
+                <label for="filter-path" class="visually-hidden">Path contains</label>
+                <input id="filter-path" class="input grow" type="search" placeholder="Path contains (e.g. password)" autocomplete="off" />
               </div>
+              <button id="filters-toggle" type="button" class="button small" aria-expanded="false" aria-controls="results-filters">
+                <span data-icon="filter"></span>Filters<span id="filters-count" class="badge info" hidden></span>
+              </button>
+              <span id="columns-menu"></span>
               <span class="label">Export all</span>
               <button type="button" class="button small" data-export="txt"><span data-icon="download"></span>TXT</button>
               <button type="button" class="button small" data-export="csv"><span data-icon="download"></span>CSV</button>
               <button type="button" class="button small" data-export="json"><span data-icon="download"></span>JSON</button>
             </div>
+
+            <!-- More filters (the path filter is in the toolbar above). Applied by the server to all results. -->
+            <div id="results-filters" class="filters-panel" hidden>
+              <div class="filters-grid">
+                <div class="field">
+                  <label for="filter-name">Name contains</label>
+                  <input id="filter-name" class="input" type="search" placeholder="passw" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="filter-type">Type</label>
+                  <select id="filter-type" class="select">
+                    <option value="">Files and folders</option>
+                    <option value="file">Files only</option>
+                    <option value="folder">Folders only</option>
+                  </select>
+                </div>
+                <fieldset class="field">
+                  <legend class="label">Size</legend>
+                  <div class="row">
+                    <label for="filter-size-min" class="visually-hidden">Minimum size</label>
+                    <input id="filter-size-min" class="input number-input" type="number" min="0" step="any" placeholder="From" />
+                    <label for="filter-size-min-unit" class="visually-hidden">Unit of the minimum size</label>
+                    <select id="filter-size-min-unit" class="select unit-select"></select>
+                    <label for="filter-size-max" class="visually-hidden">Maximum size</label>
+                    <input id="filter-size-max" class="input number-input" type="number" min="0" step="any" placeholder="To" />
+                    <label for="filter-size-max-unit" class="visually-hidden">Unit of the maximum size</label>
+                    <select id="filter-size-max-unit" class="select unit-select"></select>
+                  </div>
+                </fieldset>
+                <fieldset class="field">
+                  <legend class="label">Modified</legend>
+                  <div class="row">
+                    <label for="filter-modified-from" class="visually-hidden">Modified from</label>
+                    <input id="filter-modified-from" class="input auto-width" type="datetime-local" />
+                    <span class="muted">to</span>
+                    <label for="filter-modified-to" class="visually-hidden">Modified until</label>
+                    <input id="filter-modified-to" class="input auto-width" type="datetime-local" />
+                  </div>
+                </fieldset>
+              </div>
+              <fieldset class="field">
+                <legend class="label">Attributes</legend>
+                <div id="filter-attributes" class="attributes-grid"></div>
+              </fieldset>
+              <div class="row">
+                <button id="filters-clear" type="button" class="button small"><span data-icon="x"></span>Clear all filters</button>
+              </div>
+            </div>
+
             <div class="table-wrapper">
-              <table class="table">
-                <caption id="results-caption" class="visually-hidden">Matches</caption>
+              <table id="results-table" class="table results-table">
+                <caption class="visually-hidden">Matches</caption>
+                <colgroup id="results-columns"></colgroup>
                 <thead>
                   <tr id="results-head"></tr>
                 </thead>
@@ -135,6 +203,10 @@
               <button id="results-next" type="button" class="button small icon-only" aria-label="Next page" title="Next page"><span data-icon="chevronRight"></span></button>
               <button id="results-last" type="button" class="button small icon-only" aria-label="Last page" title="Last page"><span data-icon="chevronsRight"></span></button>
             </div>
+            <div class="legend">
+              <span id="legend-title" class="label">Attributes</span>
+              <dl id="results-legend" class="legend-list" aria-labelledby="legend-title"></dl>
+            </div>
           </div>
         </div>
       </section>
@@ -149,6 +221,7 @@
               <span id="ruler-path" class="path"></span>
             </div>
             <span id="ruler-dirty" class="badge warning" hidden>Unsaved changes</span>
+            <button id="ruler-open" type="button" class="button"><span data-icon="folderOpen"></span>Open from uploads</button>
             <button id="ruler-save" type="button" class="button primary"><span data-icon="save"></span>Save</button>
             <button id="ruler-export" type="button" class="button"><span data-icon="download"></span>Download a copy</button>
           </div>

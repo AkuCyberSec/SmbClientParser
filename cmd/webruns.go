@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,6 +37,10 @@ const (
 	exportFormatJSON = "json"
 
 	percentComplete = 100
+
+	// Results filters: date format of the browser's datetime-local inputs, and "no size limit"
+	filterTimeLayout = "2006-01-02T15:04"
+	noSizeLimit      = -1
 )
 
 type runStatus string
@@ -55,26 +60,60 @@ type runSettings struct {
 	Server        string `json:"server"`
 	Share         string `json:"share"`
 	PathDelimiter string `json:"path_delimiter"`
+	RulerFile     string `json:"ruler_file"` // name of a ruler file in the upload folder, empty for the Rules tab
+}
+
+// runRules are the rules a run uses: a frozen copy of the Rules tab, or a ruler file of the upload folder.
+type runRules struct {
+	ruler         *parsingruler.ParsingRuler
+	source        string   // shown to the user: absolute path of the ruler file, or a description
+	usesLiveRuler bool     // true if copied from the Rules tab
+	liveVersion   int      // version of the Rules tab that was copied (only if usesLiveRuler)
+	warnings      []string // things the user should know before queuing the run
+}
+
+// attributeInfo explains one SMB attribute letter (legend and filters of the Results tab).
+type attributeInfo struct {
+	Letter smbclientresource.EntryAttribute `json:"letter"`
+	Name   string                           `json:"name"`
+}
+
+var attributeLegend = []attributeInfo{
+	{smbclientresource.AttributeArchive, "Archive"},
+	{smbclientresource.AttributeDirectory, "Directory"},
+	{smbclientresource.AttributeReadOnly, "Read-only"},
+	{smbclientresource.AttributeHidden, "Hidden"},
+	{smbclientresource.AttributeSystem, "System"},
+	{smbclientresource.AttributeNormal, "Normal"},
+	{smbclientresource.AttributeVolume, "Volume"},
+	{smbclientresource.AttributeTemporary, "Temporary"},
+	{smbclientresource.AttributeCompressed, "Compressed"},
+	{smbclientresource.AttributeEncrypted, "Encrypted"},
+	{smbclientresource.AttributeOffline, "Offline"},
+	{smbclientresource.AttributeNotIndexed, "Not indexed"},
 }
 
 // webRun is one parse of an smbclient output, queued from the browser.
 // All fields are protected by webServer.runsMu.
 type webRun struct {
-	id           int
-	settings     runSettings
-	status       runStatus
-	errorMessage string
-	queuedAt     time.Time
-	startedAt    time.Time
-	finishedAt   time.Time
-	rulerVersion int // version of the live ruler this run copied
+	id            int
+	settings      runSettings
+	status        runStatus
+	errorMessage  string
+	queuedAt      time.Time
+	startedAt     time.Time
+	finishedAt    time.Time
+	rulerSource   string // where the rules come from (see runRules)
+	usesLiveRuler bool
+	rulerVersion  int // version of the Rules tab this run copied (only if usesLiveRuler)
 
 	ruler          *parsingruler.ParsingRuler       // frozen copy of the rules, owned by this run
 	parser         *smbclientparser.SmbClientParser // nil until the run starts
 	cancel         context.CancelFunc               // nil until the run starts
 	results        []resultRow                      // set when done; read-only from then on
-	summary        []groupSummary                   // matches per group and rule, for the sidebar
+	summary        []groupSummary                   // enabled groups and rules, for the sidebar
 	resultsDropped bool                             // results freed to save memory (see -keep-runs)
+	exports        []string                         // names of the files exported to the download folder (see webdelete.go)
 }
 
 // resultRow is one matched file or folder.
@@ -88,7 +127,30 @@ type resultRow struct {
 	Modified   string `json:"modified"`
 	Attributes string `json:"attributes"`
 
-	lowercasePath string // used by the text filter
+	// Used by the text filters
+	lowercasePath string
+	lowercaseName string
+}
+
+// resultFilter holds the filters of the Results tab. Empty values (or noSizeLimit) don't filter.
+type resultFilter struct {
+	group             string // sidebar selection
+	rule              string // sidebar selection
+	pathContains      string // lowercase
+	nameContains      string // lowercase
+	entryType         string
+	minSize           int64
+	maxSize           int64
+	modifiedFrom      string // displayTimeLayout, compared as text
+	modifiedTo        string
+	attributesWith    string // letters the entry must have
+	attributesWithout string // letters the entry must not have
+}
+
+// groupRuleKey identifies a rule inside a group (used to count matches per rule).
+type groupRuleKey struct {
+	group string
+	rule  string
 }
 
 type groupSummary struct {
@@ -106,13 +168,15 @@ type ruleSummary struct {
 type runView struct {
 	ID             int         `json:"id"`
 	Settings       runSettings `json:"settings"`
+	RulerSource    string      `json:"ruler_source"`
 	Status         runStatus   `json:"status"`
 	Error          string      `json:"error,omitempty"`
 	Progress       float64     `json:"progress"` // percent
 	Matches        int         `json:"matches"`
 	HasResults     bool        `json:"has_results"`
 	ResultsDropped bool        `json:"results_dropped"`
-	Outdated       bool        `json:"outdated"` // rules changed after this run copied them
+	Outdated       bool        `json:"outdated"` // the Rules tab changed after this run copied it
+	Exports        []string    `json:"exports"`  // names of the files exported to the download folder
 	QueuedAt       time.Time   `json:"queued_at"`
 	StartedAt      *time.Time  `json:"started_at,omitempty"`
 	FinishedAt     *time.Time  `json:"finished_at,omitempty"`
@@ -150,12 +214,14 @@ func (r *webRun) viewLocked(currentRulerVersion int) runView {
 	view := runView{
 		ID:             r.id,
 		Settings:       r.settings,
+		RulerSource:    r.rulerSource,
 		Status:         r.status,
 		Error:          r.errorMessage,
 		Matches:        len(r.results),
 		HasResults:     r.results != nil,
 		ResultsDropped: r.resultsDropped,
-		Outdated:       r.rulerVersion != currentRulerVersion,
+		Outdated:       r.usesLiveRuler && r.rulerVersion != currentRulerVersion,
+		Exports:        append([]string{}, r.exports...), // a copy: the view is encoded after unlocking
 		QueuedAt:       r.queuedAt,
 		StartedAt:      optionalTime(r.startedAt),
 		FinishedAt:     optionalTime(r.finishedAt),
@@ -202,44 +268,72 @@ func (s *webServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"runs": views})
 }
 
-// handleStartRun adds a run to the queue, with a frozen copy of the current rules.
+// prepareRun validates the settings (the input file path becomes absolute) and loads the rules of the run.
+func (s *webServer) prepareRun(settings *runSettings) (runRules, error) {
+	if err := settings.validate(); err != nil {
+		return runRules{}, err
+	}
+	inputPath, err := filepath.Abs(settings.InputFile)
+	if err != nil {
+		return runRules{}, err
+	}
+	if info, err := os.Stat(inputPath); err != nil || !info.Mode().IsRegular() {
+		return runRules{}, fmt.Errorf("input file %s not found", inputPath)
+	}
+	settings.InputFile = inputPath
+
+	var rules runRules
+	if settings.RulerFile == "" {
+		rules, err = s.rulesFromRulesTab()
+	} else {
+		rules, err = s.rulesFromUploadedFile(settings.RulerFile)
+	}
+	if err != nil {
+		return runRules{}, err
+	}
+	// The delimiter chosen in the form applies to this run only
+	rules.ruler.PathDelimiter = parsingruler.PathDelimiter(settings.PathDelimiter)
+	rules.warnings = append(rules.warnings, enabledRulesWarnings(rules.ruler)...)
+	return rules, nil
+}
+
+// handleCheckRun validates a run without queuing it and returns the warnings to show to the user.
+func (s *webServer) handleCheckRun(w http.ResponseWriter, r *http.Request) {
+	var settings runSettings
+	if !readJSON(w, r, &settings) {
+		return
+	}
+	rules, err := s.prepareRun(&settings)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"warnings": append([]string{}, rules.warnings...)})
+}
+
+// handleStartRun adds a run to the queue (the browser has already shown the warnings, see handleCheckRun).
 func (s *webServer) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	var settings runSettings
 	if !readJSON(w, r, &settings) {
 		return
 	}
-	if err := settings.validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	inputPath, err := filepath.Abs(settings.InputFile)
+	rules, err := s.prepareRun(&settings)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if info, err := os.Stat(inputPath); err != nil || !info.Mode().IsRegular() {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("input file %s not found", inputPath))
-		return
-	}
-	settings.InputFile = inputPath
-
-	rulerCopy, rulerVersion, err := s.frozenRulerCopy()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// The delimiter chosen in the form applies to this run only
-	rulerCopy.PathDelimiter = parsingruler.PathDelimiter(settings.PathDelimiter)
 
 	s.runsMu.Lock()
 	s.lastRunID++
 	newRun := &webRun{
-		id:           s.lastRunID,
-		settings:     settings,
-		status:       runQueued,
-		queuedAt:     time.Now(),
-		rulerVersion: rulerVersion,
-		ruler:        rulerCopy,
+		id:            s.lastRunID,
+		settings:      settings,
+		status:        runQueued,
+		queuedAt:      time.Now(),
+		rulerSource:   rules.source,
+		usesLiveRuler: rules.usesLiveRuler,
+		rulerVersion:  rules.liveVersion,
+		ruler:         rules.ruler,
 	}
 	queued := true
 	select {
@@ -251,14 +345,17 @@ func (s *webServer) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		newRun.finishedAt = time.Now()
 	}
 	s.runs = append(s.runs, newRun)
-	view := newRun.viewLocked(rulerVersion)
+	view := newRun.viewLocked(rules.liveVersion)
 	s.runsMu.Unlock()
 
 	if !queued {
 		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("the queue is full (%d runs), wait for some to finish", runQueueCapacity))
 		return
 	}
-	s.activity.add(levelInfo, "Run #%d queued: %s (server %s, share %s)", newRun.id, settings.InputFile, settings.Server, settings.Share)
+	s.activity.add(levelInfo, "Run #%d queued: %s (server %s, share %s, rules %s)", newRun.id, settings.InputFile, settings.Server, settings.Share, rules.source)
+	for _, warning := range rules.warnings {
+		s.activity.add(levelWarning, "Run #%d queued despite a warning: %s", newRun.id, warning)
+	}
 	writeJSON(w, http.StatusCreated, view)
 }
 
@@ -326,7 +423,7 @@ func (s *webServer) executeRun(target *webRun) {
 	var summary []groupSummary
 	if err == nil {
 		results = collectResults(target.ruler)
-		summary = summarizeMatches(target.ruler)
+		summary = listEnabledRules(target.ruler)
 	}
 
 	s.runsMu.Lock()
@@ -432,6 +529,7 @@ func newResultRow(groupName string, ruleName string, entry smbclientresource.Smb
 		Modified:      formatSmbclientTime(details.Timestamp),
 		Attributes:    string(details.Attributes),
 		lowercasePath: strings.ToLower(entry.GetFullPath()),
+		lowercaseName: strings.ToLower(entry.GetName()),
 	}
 }
 
@@ -444,8 +542,9 @@ func formatSmbclientTime(timestamp string) string {
 	return parsed.Format(displayTimeLayout)
 }
 
-// summarizeMatches counts matches for every enabled rule of every enabled group, in processing order.
-func summarizeMatches(ruler *parsingruler.ParsingRuler) []groupSummary {
+// listEnabledRules returns every enabled rule of every enabled group, in processing order:
+// the structure of the sidebar of the Results tab (counts are filled by countMatches).
+func listEnabledRules(ruler *parsingruler.ParsingRuler) []groupSummary {
 	summary := []groupSummary{}
 	for _, groupName := range ruler.GetSortedRuleGroupNames() {
 		group := ruler.RuleGroups[groupName]
@@ -454,24 +553,40 @@ func summarizeMatches(ruler *parsingruler.ParsingRuler) []groupSummary {
 		}
 		groupItem := groupSummary{Name: groupName, Rules: []ruleSummary{}}
 		for _, ruleName := range group.GetSortedRuleNames() {
-			rule := group.Rules[ruleName]
-			if !rule.Enabled {
-				continue
+			if group.Rules[ruleName].Enabled {
+				groupItem.Rules = append(groupItem.Rules, ruleSummary{Name: ruleName})
 			}
-			matches := rule.MatchesNumber()
-			groupItem.Rules = append(groupItem.Rules, ruleSummary{Name: ruleName, Matches: matches})
-			groupItem.Matches += matches
 		}
 		summary = append(summary, groupItem)
 	}
 	return summary
 }
 
+// countMatches returns a copy of the sidebar structure with the given match counts.
+func countMatches(summary []groupSummary, counts map[groupRuleKey]int) []groupSummary {
+	counted := make([]groupSummary, 0, len(summary))
+	for _, group := range summary {
+		groupItem := groupSummary{Name: group.Name, Rules: []ruleSummary{}}
+		for _, rule := range group.Rules {
+			matches := counts[groupRuleKey{group.Name, rule.Name}]
+			groupItem.Rules = append(groupItem.Rules, ruleSummary{Name: rule.Name, Matches: matches})
+			groupItem.Matches += matches
+		}
+		counted = append(counted, groupItem)
+	}
+	return counted
+}
+
 // handleRunResults returns one page of results.
-// Query parameters: run, group, rule, filter (text in the path), sort (column), order (asc or desc), page (from 1).
+// Query parameters: run, sort (column), order (asc or desc), page (from 1) and the filters (see parseResultFilter).
 func (s *webServer) handleRunResults(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	id, _ := strconv.Atoi(query.Get("run"))
+	filter, err := parseResultFilter(query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	currentVersion := s.currentRulerVersion()
 
 	s.runsMu.Lock()
@@ -486,7 +601,23 @@ func (s *webServer) handleRunResults(w http.ResponseWriter, r *http.Request) {
 	summary := target.summary
 	s.runsMu.Unlock()
 
-	matching := filterResults(results, query.Get("group"), query.Get("rule"), query.Get("filter"))
+	// Sidebar counts follow every filter except the sidebar selection itself (group and rule).
+	// Pointers, not copies, keep memory low with millions of results.
+	counts := map[groupRuleKey]int{}
+	totalFiltered := 0
+	matching := []*resultRow{}
+	for i := range results {
+		row := &results[i]
+		if !filter.matches(row) {
+			continue
+		}
+		totalFiltered++
+		counts[groupRuleKey{row.Group, row.Rule}]++
+		if filter.matchesSidebarSelection(row) {
+			matching = append(matching, row)
+		}
+	}
+
 	if sorter, ok := resultSorters[query.Get("sort")]; ok {
 		descending := query.Get("order") == "desc"
 		slices.SortStableFunc(matching, func(a, b *resultRow) int {
@@ -508,34 +639,109 @@ func (s *webServer) handleRunResults(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, *row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"run":       view,
-		"groups":    summary,
-		"rows":      rows,
-		"total":     len(matching),
-		"page":      page,
-		"pages":     pages,
-		"page_size": resultsPageSize,
+		"run":            view,
+		"groups":         countMatches(summary, counts),
+		"total_filtered": totalFiltered, // "All matches" in the sidebar
+		"rows":           rows,
+		"total":          len(matching),
+		"page":           page,
+		"pages":          pages,
+		"page_size":      resultsPageSize,
 	})
 }
 
-// filterResults returns pointers (not copies) to keep memory low with millions of results.
-func filterResults(results []resultRow, group string, rule string, filter string) []*resultRow {
-	lowercaseFilter := strings.ToLower(filter)
-	matching := []*resultRow{}
-	for i := range results {
-		row := &results[i]
-		if group != "" && row.Group != group {
-			continue
-		}
-		if rule != "" && row.Rule != rule {
-			continue
-		}
-		if lowercaseFilter != "" && !strings.Contains(row.lowercasePath, lowercaseFilter) {
-			continue
-		}
-		matching = append(matching, row)
+// parseResultFilter reads the filters from the query:
+// group, rule, path, name (text contained, case-insensitive), type (file or folder),
+// size_min, size_max (bytes), modified_from, modified_to (filterTimeLayout, both included),
+// attributes_with, attributes_without (attribute letters, e.g. "HS").
+func parseResultFilter(query url.Values) (resultFilter, error) {
+	filter := resultFilter{
+		group:             query.Get("group"),
+		rule:              query.Get("rule"),
+		pathContains:      strings.ToLower(query.Get("path")),
+		nameContains:      strings.ToLower(query.Get("name")),
+		entryType:         query.Get("type"),
+		attributesWith:    strings.ToUpper(query.Get("attributes_with")),
+		attributesWithout: strings.ToUpper(query.Get("attributes_without")),
 	}
-	return matching
+
+	switch filter.entryType {
+	case "", entryTypeFile, entryTypeFolder:
+	default:
+		return resultFilter{}, fmt.Errorf("unknown type %q", filter.entryType)
+	}
+
+	var err error
+	if filter.minSize, err = parseSizeFilter(query.Get("size_min")); err != nil {
+		return resultFilter{}, err
+	}
+	if filter.maxSize, err = parseSizeFilter(query.Get("size_max")); err != nil {
+		return resultFilter{}, err
+	}
+
+	if text := query.Get("modified_from"); text != "" {
+		from, err := time.Parse(filterTimeLayout, text)
+		if err != nil {
+			return resultFilter{}, fmt.Errorf("invalid date %q", text)
+		}
+		filter.modifiedFrom = from.Format(displayTimeLayout)
+	}
+	if text := query.Get("modified_to"); text != "" {
+		to, err := time.Parse(filterTimeLayout, text)
+		if err != nil {
+			return resultFilter{}, fmt.Errorf("invalid date %q", text)
+		}
+		// The whole last minute is included
+		filter.modifiedTo = to.Add(time.Minute - time.Second).Format(displayTimeLayout)
+	}
+
+	for _, letter := range filter.attributesWith + filter.attributesWithout {
+		if !strings.ContainsRune(smbclientresource.ValidSmbAttributes, letter) {
+			return resultFilter{}, fmt.Errorf("unknown attribute %q", letter)
+		}
+	}
+	return filter, nil
+}
+
+// parseSizeFilter returns noSizeLimit for an empty text.
+func parseSizeFilter(text string) (int64, error) {
+	if text == "" {
+		return noSizeLimit, nil
+	}
+	size, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || size < 0 {
+		return 0, fmt.Errorf("invalid size %q", text)
+	}
+	return size, nil
+}
+
+// matches checks every filter except the sidebar selection (group and rule).
+func (f resultFilter) matches(row *resultRow) bool {
+	switch {
+	case f.pathContains != "" && !strings.Contains(row.lowercasePath, f.pathContains),
+		f.nameContains != "" && !strings.Contains(row.lowercaseName, f.nameContains),
+		f.entryType != "" && row.Type != f.entryType,
+		f.minSize != noSizeLimit && row.Size < f.minSize,
+		f.maxSize != noSizeLimit && row.Size > f.maxSize,
+		f.modifiedFrom != "" && row.Modified < f.modifiedFrom,
+		f.modifiedTo != "" && row.Modified > f.modifiedTo:
+		return false
+	}
+	for _, letter := range f.attributesWith {
+		if !strings.ContainsRune(row.Attributes, letter) {
+			return false
+		}
+	}
+	for _, letter := range f.attributesWithout {
+		if strings.ContainsRune(row.Attributes, letter) {
+			return false
+		}
+	}
+	return true
+}
+
+func (f resultFilter) matchesSidebarSelection(row *resultRow) bool {
+	return (f.group == "" || row.Group == f.group) && (f.rule == "" || row.Rule == f.rule)
 }
 
 // handleExportRun saves all the results of a run in the download folder.
@@ -589,6 +795,10 @@ func (s *webServer) handleExportRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cannot save %s: %v", path, err))
 		return
 	}
+
+	s.runsMu.Lock()
+	s.trackExportLocked(target, request.FileName)
+	s.runsMu.Unlock()
 
 	s.activity.add(levelSuccess, "Run #%d exported to %s", request.ID, path)
 	writeJSON(w, http.StatusOK, map[string]string{"folder": downloadsFolderID, "name": request.FileName, "path": path})

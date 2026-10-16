@@ -12,6 +12,14 @@ import (
 	"slices"
 	"smbclientparser/internal/parsingruler"
 	"strings"
+	"time"
+)
+
+const (
+	// Ruler files in the upload folder are recognized by their extension
+	rulerFileExtension = ".json"
+	// Bigger .json files in the upload folder are not considered rulers (e.g. exported results)
+	maxRulerFileBytes = 1 << 20 // 1 MiB
 )
 
 // rulerView is the ruler as shown in the browser. Groups and rules are in processing order
@@ -46,6 +54,23 @@ type ruleRequest struct {
 	Regexp        string `json:"regexp"`
 	Enabled       bool   `json:"enabled"`
 	PathDelimiter string `json:"path_delimiter"`
+}
+
+// rulerSnapshot is a frozen copy of the live ruler, with the state of the Rules tab when it was copied.
+type rulerSnapshot struct {
+	ruler   *parsingruler.ParsingRuler
+	version int
+	path    string // ruler file, empty if not defined
+	dirty   bool   // unsaved changes
+}
+
+// uploadedRuler is a .json file of the upload folder, offered as rules for a run or to open in the Rules tab.
+type uploadedRuler struct {
+	Name          string    `json:"name"`
+	Path          string    `json:"path"`
+	Modified      time.Time `json:"modified"`
+	PathDelimiter string    `json:"path_delimiter,omitempty"`
+	Error         string    `json:"error,omitempty"` // why it can't be used
 }
 
 // rulerEdit changes the live ruler (called with rulerMu locked).
@@ -90,26 +115,106 @@ func (s *webServer) currentRulerVersion() int {
 	return s.rulerVersion
 }
 
-// frozenRulerCopy returns an independent copy of the live ruler and the version it was copied from.
+// frozenRulerCopy returns an independent copy of the live ruler.
 // Runs use a copy so that later edits don't affect them, and each run has its own matched entries.
-func (s *webServer) frozenRulerCopy() (*parsingruler.ParsingRuler, int, error) {
+func (s *webServer) frozenRulerCopy() (rulerSnapshot, error) {
 	s.rulerMu.Lock()
 	data, err := json.Marshal(s.ruler)
-	version := s.rulerVersion
+	snapshot := rulerSnapshot{version: s.rulerVersion, path: s.rulerPath, dirty: s.rulerDirty}
 	s.rulerMu.Unlock()
 	if err != nil {
-		return nil, 0, err
+		return rulerSnapshot{}, err
 	}
 
-	rulerCopy, err := parsingruler.LoadFromReader(bytes.NewReader(data))
+	snapshot.ruler, err = parsingruler.LoadFromReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, 0, err
+		return rulerSnapshot{}, err
 	}
 	// The parser panics on invalid expressions: find them before it does
-	if err := validateExpressions(rulerCopy); err != nil {
-		return nil, 0, err
+	if err := validateExpressions(snapshot.ruler); err != nil {
+		return rulerSnapshot{}, err
 	}
-	return rulerCopy, version, nil
+	return snapshot, nil
+}
+
+// loadRulerFile reads a ruler file and checks that a run can use it.
+// The parsingruler package panics or stops the program on some invalid files: they are caught here.
+func loadRulerFile(path string) (ruler *parsingruler.ParsingRuler, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxRulerFileBytes {
+		return nil, fmt.Errorf("too large to be a ruler file (max %d KiB)", maxRulerFileBytes/1024)
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			ruler, err = nil, fmt.Errorf("not a valid ruler file (%v)", recovered)
+		}
+	}()
+	ruler, err = parsingruler.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("not a valid ruler file (%w)", err)
+	}
+	if err := validatePathDelimiter(ruler.PathDelimiter); err != nil {
+		return nil, err
+	}
+	if err := validateExpressions(ruler); err != nil {
+		return nil, err
+	}
+	return ruler, nil
+}
+
+// rulesFromRulesTab returns a frozen copy of the Rules tab for a run, warning if it isn't saved in a file.
+func (s *webServer) rulesFromRulesTab() (runRules, error) {
+	snapshot, err := s.frozenRulerCopy()
+	if err != nil {
+		return runRules{}, err
+	}
+	rules := runRules{ruler: snapshot.ruler, source: snapshot.path, usesLiveRuler: true, liveVersion: snapshot.version}
+	switch {
+	case snapshot.path == "":
+		rules.source = "Rules tab (not saved to a file)"
+		rules.warnings = append(rules.warnings, "no ruler file is defined: these rules exist only in memory (save them in the Rules tab to keep them)")
+	case snapshot.dirty:
+		rules.source = snapshot.path + " (with unsaved changes)"
+		rules.warnings = append(rules.warnings, fmt.Sprintf("the rules have unsaved changes: the run uses the rules shown in the Rules tab, not the content of %s", snapshot.path))
+	}
+	return rules, nil
+}
+
+// rulesFromUploadedFile loads a ruler file of the upload folder for a run.
+func (s *webServer) rulesFromUploadedFile(name string) (runRules, error) {
+	path, err := s.uploads.filePath(name)
+	if err != nil {
+		return runRules{}, err
+	}
+	ruler, err := loadRulerFile(path)
+	if err != nil {
+		return runRules{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return runRules{ruler: ruler, source: path}, nil
+}
+
+// enabledRulesWarnings warns when no rule is enabled outside the default group.
+func enabledRulesWarnings(ruler *parsingruler.ParsingRuler) []string {
+	if ruler.AnyRuleGroupEnabled() {
+		return nil
+	}
+	if isMatchAnyEnabled(ruler) {
+		return []string{fmt.Sprintf("no rule is enabled outside the %s group: every file and folder will match %q", parsingruler.DefaultParsingGroupName, parsingruler.DefaultParsingRuleName)}
+	}
+	return []string{"no rule is enabled: nothing will match"}
+}
+
+func isMatchAnyEnabled(ruler *parsingruler.ParsingRuler) bool {
+	group, ok := ruler.RuleGroups[parsingruler.DefaultParsingGroupName]
+	if !ok || !group.Enabled {
+		return false
+	}
+	rule, ok := group.Rules[parsingruler.DefaultParsingRuleName]
+	return ok && rule.Enabled
 }
 
 // validateExpressions checks the expressions of all enabled rules in enabled groups.
@@ -324,13 +429,13 @@ func (s *webServer) handleTestName(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "enter a file or folder name to test")
 		return
 	}
-	rulerCopy, _, err := s.frozenRulerCopy()
+	snapshot, err := s.frozenRulerCopy()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	rule, matched := rulerCopy.MatchRule(request.Name)
+	rule, matched := snapshot.ruler.MatchRule(request.Name)
 	if !matched {
 		writeJSON(w, http.StatusOK, map[string]any{"matched": false})
 		return
@@ -340,7 +445,7 @@ func (s *webServer) handleTestName(w http.ResponseWriter, r *http.Request) {
 		"matched":        true,
 		"group":          group.Name,
 		"rule":           rule.Name,
-		"group_position": slices.Index(rulerCopy.GetSortedRuleGroupNames(), group.Name) + 1,
+		"group_position": slices.Index(snapshot.ruler.GetSortedRuleGroupNames(), group.Name) + 1,
 		"rule_position":  slices.Index(group.GetSortedRuleNames(), rule.Name) + 1,
 	})
 }
@@ -416,6 +521,62 @@ func (s *webServer) handleExportRuler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cannot save %s: %v", path, err))
 		return
 	}
+	s.forgetExports(request.FileName) // in case it overwrote exported results
 	s.activity.add(levelSuccess, "Copy of the rules saved to %s", path)
 	writeJSON(w, http.StatusOK, map[string]string{"folder": downloadsFolderID, "name": request.FileName, "path": path})
+}
+
+// handleListUploadedRulers lists the .json files of the upload folder, telling which ones are valid rulers.
+func (s *webServer) handleListUploadedRulers(w http.ResponseWriter, r *http.Request) {
+	files, err := s.uploads.list()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cannot read %s: %v", s.uploads.path, err))
+		return
+	}
+	rulers := []uploadedRuler{}
+	for _, file := range files {
+		if !strings.EqualFold(filepath.Ext(file.Name), rulerFileExtension) {
+			continue
+		}
+		item := uploadedRuler{Name: file.Name, Path: file.Path, Modified: file.Modified}
+		if ruler, err := loadRulerFile(file.Path); err != nil {
+			item.Error = err.Error()
+		} else {
+			item.PathDelimiter = string(ruler.PathDelimiter)
+		}
+		rulers = append(rulers, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"folder": s.uploads.path, "rulers": rulers})
+}
+
+// handleOpenUploadedRuler replaces the rules of the Rules tab with a ruler file of the upload folder,
+// which becomes the current ruler file (Save writes to it).
+func (s *webServer) handleOpenUploadedRuler(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		FileName string `json:"file_name"`
+	}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	path, err := s.uploads.filePath(request.FileName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ruler, err := loadRulerFile(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", path, err))
+		return
+	}
+
+	s.rulerMu.Lock()
+	s.ruler = ruler
+	s.rulerPath = path
+	s.rulerDirty = false
+	s.rulerVersion++
+	view := s.rulerViewLocked()
+	s.rulerMu.Unlock()
+
+	s.activity.add(levelInfo, "Rules opened from %s", path)
+	writeJSON(w, http.StatusOK, view)
 }

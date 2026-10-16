@@ -3,8 +3,8 @@ import { api, ApiError, downloadUrl } from "./api.js";
 import { icon } from "./icons.js";
 
 const TOAST_DURATION_MS = 6000;
-const BYTES_PER_UNIT = 1024;
-const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+export const BYTES_PER_UNIT = 1024;
+export const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const SECONDS_PER_HOUR = 3600;
@@ -64,6 +64,113 @@ export function replaceKeepingFocus(container, ...children) {
   const focusKey = container.contains(document.activeElement) ? document.activeElement.dataset.focusKey : undefined;
   container.replaceChildren(...children);
   if (focusKey) container.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Dropdown menus
+// ---------------------------------------------------------------------------
+
+/**
+ * A menu opened by a button. Built on <details>/<summary>, so it opens with Enter/Space without extra code.
+ * items: [{ text, iconName, onClick }], or `content` (an element) for a custom panel (e.g. checkboxes).
+ * Icon-only menus (no `text`) must pass `label`. focusKey: see replaceKeepingFocus().
+ */
+export function dropdownMenu({ text = "", iconName, label, items = [], content, kind = "", small = true, focusKey }) {
+  const classes = ["button", kind, small ? "small" : "", text ? "" : "icon-only"].filter(Boolean).join(" ");
+  const summary = el(
+    "summary",
+    { class: classes, "aria-label": text ? undefined : label, title: label, "data-focus-key": focusKey },
+    iconName ? icon(iconName) : null,
+    text,
+    text ? icon("chevronDown") : null,
+  );
+  const details = el("details", { class: "menu" }, summary);
+  const panel = el(
+    "div",
+    { class: "menu-panel" },
+    content ??
+      items.map((item) =>
+        el(
+          "button",
+          {
+            type: "button",
+            class: "menu-item",
+            onclick: () => {
+              details.open = false;
+              item.onClick();
+            },
+          },
+          item.iconName ? icon(item.iconName) : null,
+          item.text,
+        ),
+      ),
+  );
+  details.append(panel);
+  details.addEventListener("toggle", () => {
+    if (details.open) placeMenuPanel(summary, panel);
+  });
+  return details;
+}
+
+/**
+ * The panel is positioned on the screen (position: fixed) instead of inside its container,
+ * so tables that scroll sideways don't cut it.
+ */
+function placeMenuPanel(summary, panel) {
+  const MENU_GAP_PX = 4;
+  const SCREEN_MARGIN_PX = 8;
+  const anchor = summary.getBoundingClientRect();
+  const left = Math.min(anchor.left, window.innerWidth - panel.offsetWidth - SCREEN_MARGIN_PX);
+  const fitsBelow = anchor.bottom + MENU_GAP_PX + panel.offsetHeight < window.innerHeight;
+  panel.style.left = `${Math.max(left, SCREEN_MARGIN_PX)}px`;
+  panel.style.top = fitsBelow ? `${anchor.bottom + MENU_GAP_PX}px` : `${Math.max(anchor.top - panel.offsetHeight - MENU_GAP_PX, SCREEN_MARGIN_PX)}px`;
+}
+
+/**
+ * Closes the open menus, except those the event went through (event.composedPath() still lists them
+ * when a click inside a menu re-renders it and removes the clicked element).
+ */
+function closeMenus({ eventPath = [], returnFocus = false } = {}) {
+  for (const menu of document.querySelectorAll("details.menu[open]")) {
+    if (eventPath.includes(menu)) continue;
+    menu.open = false;
+    if (returnFocus) menu.querySelector("summary").focus();
+  }
+}
+
+// Menus close when clicking elsewhere, pressing Escape or scrolling (their panel doesn't follow the page)
+document.addEventListener("click", (event) => closeMenus({ eventPath: event.composedPath() }));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMenus({ returnFocus: true });
+});
+document.addEventListener("scroll", (event) => closeMenus({ eventPath: event.composedPath() }), true);
+
+// ---------------------------------------------------------------------------
+// Clipboard
+// ---------------------------------------------------------------------------
+
+/** Copies text to the clipboard and confirms with a toast. */
+export async function copyToClipboard(text, description = "Copied") {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // The Clipboard API is missing (plain HTTP on a non-local address) or refused: use the older method
+    if (!copyWithTextarea(text)) {
+      showError("the browser refused to copy: select the text and copy it by hand");
+      return;
+    }
+  }
+  showToast(pathText(`${description}:`, text));
+}
+
+function copyWithTextarea(text) {
+  const textarea = el("textarea", { readonly: true, class: "visually-hidden" });
+  textarea.value = text;
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  return copied;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +241,7 @@ export function sentence(text) {
 // Notifications
 // ---------------------------------------------------------------------------
 
-/** Shows a short message in the corner. kind: "success" or "error". */
+/** Shows a short message in the corner. kind: "success" or "error". message: text, or an element (see pathText). */
 export function showToast(message, kind = "success") {
   const toasts = document.getElementById("toasts");
   const closeButton = button({ iconName: "x", kind: "ghost", small: true, label: "Dismiss" });
@@ -142,7 +249,7 @@ export function showToast(message, kind = "success") {
     "div",
     { class: `toast ${kind}`, role: kind === "error" ? "alert" : "status" },
     icon(kind === "error" ? "alert" : "check"),
-    el("span", { class: "toast-text" }, sentence(message)),
+    el("span", { class: "toast-text" }, message instanceof Node ? message : sentence(message)),
     closeButton,
   );
   closeButton.addEventListener("click", () => toast.remove());
@@ -186,11 +293,15 @@ export function openDialog({ title, body = [], buttons, validate, cancelText = "
         errorBox.textContent = sentence(validationError);
       }
     }
+    // An error about the previous attempt is outdated as soon as the user changes something
+    const clearError = () => (errorBox.textContent = "");
     form.addEventListener("submit", onSubmit);
+    form.addEventListener("input", clearError);
     dialog.addEventListener(
       "close",
       () => {
         form.removeEventListener("submit", onSubmit);
+        form.removeEventListener("input", clearError);
         resolve(dialog.returnValue === DIALOG_CANCEL ? null : dialog.returnValue);
       },
       { once: true },
@@ -223,6 +334,11 @@ export async function askText({ title, message, label, value = "", confirmText, 
   input.select();
   const choice = await dialogPromise;
   return choice === null ? null : input.value.trim();
+}
+
+/** Text ending with a path in monospace, e.g. for toasts: no full stop is added after the path. */
+export function pathText(prefix, path) {
+  return el("span", {}, `${prefix} `, el("span", { class: "path" }, path));
 }
 
 /** A paragraph that shows an absolute path in monospace: "Saved in /path/to/folder." */

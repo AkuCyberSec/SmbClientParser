@@ -1,57 +1,59 @@
-// Results tab: matches of a finished run, with group/rule sidebar, text filter, sorting, paging and export.
+// Results tab: matches of a finished run, with group/rule sidebar, filters, sorting, paging and export.
+// Filters live in results-filters.js, the column layout in results-columns.js.
 import { api, withQuery } from "./api.js";
+import { deleteRuns } from "./delete-runs.js";
 import { icon } from "./icons.js";
+import { queueRun } from "./queue.js";
+import * as columns from "./results-columns.js";
+import * as filters from "./results-filters.js";
 import {
+  copyToClipboard,
+  dropdownMenu,
   el,
   formatNumber,
   formatSize,
   openTab,
-  replaceKeepingFocus,
   safeFileNamePart,
   saveToDownloads,
   showError,
-  showToast,
   timestampForFileName,
 } from "./ui.js";
-
-// Wait after the last key press before filtering, so we don't query the server on every letter
-const FILTER_DELAY_MS = 300;
-
-// Table columns: key is the column name understood by the server for sorting
-const COLUMNS = [
-  { key: "path", label: "Path" },
-  { key: "name", label: "Name" },
-  { key: "type", label: "Type" },
-  { key: "size", label: "Size", numeric: true },
-  { key: "modified", label: "Modified" },
-  { key: "attributes", label: "Attributes" },
-  { key: "group", label: "Group" },
-  { key: "rule", label: "Rule" },
-];
 
 const SORT_ASCENDING = "asc";
 const SORT_DESCENDING = "desc";
 
+// How each column shows a result row
+const CELL_RENDERERS = {
+  path: renderPathCell,
+  name: (row) => el("td", {}, row.name),
+  type: (row) => el("td", {}, el("span", { class: "row" }, icon(row.type === "folder" ? "folder" : "file"), row.type)),
+  size: (row) => el("td", { class: "number" }, row.type === "folder" ? "" : formatSize(row.size)),
+  modified: (row) => el("td", {}, row.modified),
+  attributes: (row) => el("td", { class: "mono", title: filters.describeAttributes(row.attributes) }, row.attributes),
+  group: (row) => el("td", {}, row.group),
+  rule: (row) => el("td", {}, row.rule),
+};
+
 let config = null;
 let runsWithResults = []; // newest first
+let shownRows = []; // rows of the current page, drawn again when the columns change
 
-// What is shown: changing any of these reloads the table
+// What is shown besides the filters: changing any of these reloads the table
 const view = {
   runId: null,
-  group: "",
+  group: "", // sidebar selection
   rule: "",
-  filter: "",
   sort: "", // empty: processing order (group, rule, path)
   order: SORT_ASCENDING,
   page: 1,
 };
 
 const runSelect = document.getElementById("results-run");
+const deleteButton = document.getElementById("results-delete");
 const outdatedBanner = document.getElementById("results-outdated");
 const emptyState = document.getElementById("results-empty");
 const content = document.getElementById("results-content");
 const groupList = document.getElementById("results-groups");
-const tableHead = document.getElementById("results-head");
 const tableBody = document.getElementById("results-body");
 const noMatch = document.getElementById("results-no-match");
 const summary = document.getElementById("results-summary");
@@ -64,34 +66,27 @@ const pageButtons = {
 };
 
 let lastPage = 1;
-let filterTimer = null;
 
 export function init(serverConfig) {
   config = serverConfig;
 
   runSelect.addEventListener("change", () => selectRun(Number(runSelect.value)));
-
-  const filterInput = document.getElementById("results-filter");
-  filterInput.addEventListener("input", () => {
-    clearTimeout(filterTimer);
-    filterTimer = setTimeout(() => {
-      view.filter = filterInput.value.trim();
-      view.page = 1;
-      loadResults();
-    }, FILTER_DELAY_MS);
-  });
-
   pageButtons.first.addEventListener("click", () => goToPage(1));
   pageButtons.previous.addEventListener("click", () => goToPage(view.page - 1));
   pageButtons.next.addEventListener("click", () => goToPage(view.page + 1));
   pageButtons.last.addEventListener("click", () => goToPage(lastPage));
-
   for (const exportButton of document.querySelectorAll("[data-export]")) {
     exportButton.addEventListener("click", () => exportResults(exportButton.dataset.export));
   }
   document.getElementById("results-run-again").addEventListener("click", runAgain);
+  deleteButton.addEventListener("click", deleteShownRun);
 
-  renderTableHead();
+  filters.init(config, () => {
+    view.page = 1;
+    loadResults();
+  });
+  columns.init(renderTable);
+  renderTable();
 }
 
 export async function show() {
@@ -108,14 +103,14 @@ export async function refresh(runs) {
   const previousIds = runsWithResults.map((run) => run.id).join();
   runsWithResults = runs.filter((run) => run.has_results);
 
-  if (runsWithResults.map((run) => run.id).join() !== previousIds) renderRunSelect();
-
+  // The run shown may have been deleted or freed: show the newest one instead
   const selectedStillAvailable = runsWithResults.some((run) => run.id === view.runId);
   if (!selectedStillAvailable) {
     view.runId = runsWithResults[0]?.id ?? null;
-    resetFilters();
-    await loadResults();
+    resetSidebarSelection();
   }
+  if (runsWithResults.map((run) => run.id).join() !== previousIds) renderRunSelect();
+  if (!selectedStillAvailable) await loadResults();
   updateOutdatedBanner();
 }
 
@@ -123,12 +118,17 @@ export async function refresh(runs) {
 export function selectRun(runId) {
   if (view.runId === runId) return;
   view.runId = runId;
-  resetFilters();
+  resetSidebarSelection();
   runSelect.value = String(runId);
   loadResults();
 }
 
-function resetFilters() {
+/** Unique file name for exported results: results-<share>-run<id>-<timestamp>.<format> */
+export function resultsFileName(run, format) {
+  return `results-${safeFileNamePart(run.settings.share)}-run${run.id}-${timestampForFileName()}.${format}`;
+}
+
+function resetSidebarSelection() {
   view.group = "";
   view.rule = "";
   view.page = 1;
@@ -154,6 +154,7 @@ function updateOutdatedBanner() {
 async function loadResults() {
   emptyState.hidden = view.runId !== null;
   content.hidden = view.runId === null;
+  deleteButton.disabled = view.runId === null;
   if (view.runId === null) return;
 
   try {
@@ -162,16 +163,17 @@ async function loadResults() {
         run: view.runId,
         group: view.group,
         rule: view.rule,
-        filter: view.filter,
         sort: view.sort,
         order: view.order,
         page: view.page,
+        ...filters.queryParameters(),
       }),
     );
     view.page = data.page;
     lastPage = data.pages;
-    renderGroups(data.groups, data.run.matches);
-    renderRows(data.rows);
+    shownRows = data.rows;
+    renderGroups(data.groups, data.total_filtered);
+    renderTable();
     renderPagination(data);
     updateOutdatedBanner();
   } catch (error) {
@@ -185,7 +187,7 @@ function goToPage(page) {
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar: all matches, then each group with its rules
+// Sidebar: all matches, then each group with its rules (counts follow the filters)
 // ---------------------------------------------------------------------------
 
 function renderGroups(groups, totalMatches) {
@@ -240,26 +242,12 @@ function filterButton({ text, count, pressed, kind, group, rule }) {
 // Table
 // ---------------------------------------------------------------------------
 
-function renderTableHead() {
-  replaceKeepingFocus(
-    tableHead,
-    ...COLUMNS.map((column) => {
-      const isSorted = view.sort === column.key;
-      const ariaSort = isSorted ? (view.order === SORT_ASCENDING ? "ascending" : "descending") : undefined;
-      let sortIcon = "arrowUpDown";
-      if (isSorted) sortIcon = view.order === SORT_ASCENDING ? "arrowUp" : "arrowDown";
-      return el(
-        "th",
-        { scope: "col", "aria-sort": ariaSort, class: column.numeric ? "number" : "" },
-        el(
-          "button",
-          { type: "button", class: "sort-button", "data-focus-key": `sort-${column.key}`, onclick: () => changeSort(column.key) },
-          column.label,
-          icon(sortIcon),
-        ),
-      );
-    }),
-  );
+/** Draws the header and the rows of the current page, with the user's column layout. */
+function renderTable() {
+  columns.renderHeader({ key: view.sort, order: view.order }, changeSort);
+  const visible = columns.visibleColumns();
+  noMatch.hidden = shownRows.length > 0;
+  tableBody.replaceChildren(...shownRows.map((row) => el("tr", {}, visible.map((column) => CELL_RENDERERS[column.key](row)))));
 }
 
 /** Each click on a column: ascending, then descending, then back to processing order. */
@@ -274,28 +262,44 @@ function changeSort(columnKey) {
     view.order = SORT_ASCENDING;
   }
   view.page = 1;
-  renderTableHead();
   loadResults();
 }
 
-function renderRows(rows) {
-  noMatch.hidden = rows.length > 0;
-  tableBody.replaceChildren(
-    ...rows.map((row) =>
-      el(
-        "tr",
-        {},
-        el("td", { class: "path path-column" }, row.path),
-        el("td", { class: "name-column" }, row.name),
-        el("td", { class: "nowrap" }, el("span", { class: "row" }, icon(row.type === "folder" ? "folder" : "file"), row.type)),
-        el("td", { class: "number" }, row.type === "folder" ? "" : formatSize(row.size)),
-        el("td", { class: "nowrap" }, row.modified),
-        el("td", { class: "mono" }, row.attributes),
-        el("td", {}, row.group),
-        el("td", {}, row.rule),
-      ),
+/** Clicking the path copies it as shown; the menu next to it copies it in other formats. */
+function renderPathCell(row) {
+  return el(
+    "td",
+    {},
+    el(
+      "div",
+      { class: "path-cell" },
+      el("button", { type: "button", class: "path-copy", title: "Click to copy the path", onclick: () => copyToClipboard(row.path, "Path copied") }, row.path),
+      dropdownMenu({
+        iconName: "ellipsis",
+        kind: "ghost",
+        label: "Other ways to copy this path",
+        items: [
+          { text: "Copy as UNC path (\\\\server\\share)", iconName: "copy", onClick: () => copyToClipboard(toUncPath(row.path), "UNC path copied") },
+          { text: "Copy as smb:// URL", iconName: "copy", onClick: () => copyToClipboard(toSmbUrl(row.path), "smb:// URL copied") },
+        ],
+      }),
     ),
   );
+}
+
+// Paths look like //server/share/dir/file (or use \ as delimiter)
+function pathParts(path) {
+  return path.split(/[\\/]+/).filter(Boolean);
+}
+
+/** \\server\share\dir\file: for Windows Explorer or "net use". */
+function toUncPath(path) {
+  return `\\\\${pathParts(path).join("\\")}`;
+}
+
+/** smb://server/share/dir/file: for macOS Finder or Linux file managers. */
+function toSmbUrl(path) {
+  return `smb://${pathParts(path).map(encodeURIComponent).join("/")}`;
 }
 
 function renderPagination(data) {
@@ -318,19 +322,22 @@ async function exportResults(format) {
   if (!run) return;
   await saveToDownloads({
     title: `Export results of run #${run.id} (${format.toUpperCase()})`,
-    suggestedName: `results-${safeFileNamePart(run.settings.share)}-run${run.id}-${timestampForFileName()}.${format}`,
+    suggestedName: resultsFileName(run, format),
     downloadFolder: config.download_folder,
     save: (fileName, overwrite) => api.post("/api/runs/export", { id: run.id, format, file_name: fileName, overwrite }),
   });
+}
+
+async function deleteShownRun() {
+  const run = selectedRun();
+  if (run && (await deleteRuns([run]))) await show();
 }
 
 async function runAgain() {
   const run = selectedRun();
   if (!run) return;
   try {
-    const newRun = await api.post("/api/runs", run.settings);
-    showToast(`Run #${newRun.id} added to the queue with the current rules`);
-    openTab("runs");
+    if (await queueRun(run.settings)) openTab("runs");
   } catch (error) {
     showError(error);
   }

@@ -102,6 +102,9 @@ func LoadFromReader(reader io.Reader) (*ParsingRuler, error) {
 	}
 
 	ruler.sortedGroupNames = make([]string, 0)
+	if ruler.RuleGroups == nil {
+		ruler.RuleGroups = make(map[string]*ParsingRuleGroup)
+	}
 	for grpName, grp := range ruler.RuleGroups {
 		ruler.sortedGroupNames = append(ruler.sortedGroupNames, grpName)
 		grp.sortedRuleNames = make([]string, 0)

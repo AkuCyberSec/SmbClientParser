@@ -6,8 +6,10 @@ import {
   button,
   confirmAction,
   el,
+  formatDateTime,
   openDialog,
   pathMessage,
+  pathText,
   saveToDownloads,
   sentence,
   showError,
@@ -18,6 +20,7 @@ import {
 
 const DIALOG_SAVE = "save";
 const DIALOG_DOWNLOAD = "download";
+const DIALOG_OPEN = "open";
 
 let config = null;
 let ruler = null; // last ruler received from the server (see rulerView in webrules.go)
@@ -33,6 +36,7 @@ const testResult = document.getElementById("ruler-test-result");
 
 export function init(serverConfig) {
   config = serverConfig;
+  document.getElementById("ruler-open").addEventListener("click", openFromUploads);
   document.getElementById("ruler-save").addEventListener("click", saveRuler);
   document.getElementById("ruler-export").addEventListener("click", downloadCopy);
   document.getElementById("ruler-add-group").addEventListener("click", addGroup);
@@ -273,7 +277,7 @@ async function saveRuler() {
 async function saveRulerTo(path, overwrite) {
   try {
     render(await api.post("/api/rules/save", { path, overwrite }));
-    showToast(`Rules saved to ${ruler.path}`);
+    showToast(pathText("Rules saved to", ruler.path));
   } catch (error) {
     if (!(error instanceof ApiError && error.isFileExists)) return showError(error);
     const replace = await confirmAction({
@@ -283,6 +287,55 @@ async function saveRulerTo(path, overwrite) {
       danger: true,
     });
     if (replace) await saveRulerTo(path, true);
+  }
+}
+
+/** Replaces the rules with a ruler file of the upload folder (it becomes the current ruler file). */
+async function openFromUploads() {
+  let listing;
+  try {
+    listing = await api.get("/api/rules/uploaded");
+  } catch (error) {
+    return showError(error);
+  }
+
+  const title = "Open rules from uploads";
+  const intro = pathMessage("Ruler files (.json) in", listing.folder, ":");
+  const usable = listing.rulers.filter((item) => !item.error);
+  if (usable.length === 0) {
+    await openDialog({
+      title,
+      body: [intro, el("p", { class: "muted" }, "No usable ruler file. Upload one in the Files tab, or copy it into the folder above.")],
+      buttons: [],
+      cancelText: "Close",
+    });
+    return;
+  }
+
+  // Files that can't be used are listed with the reason, but can't be chosen
+  const options = listing.rulers.map((item) =>
+    el(
+      "label",
+      { class: "row" },
+      el("input", { type: "radio", name: "ruler-choice", value: item.name, disabled: item.error !== undefined, checked: item === usable[0] }),
+      el("span", { class: "grow path" }, item.name),
+      item.error ? el("span", { class: "field-error" }, sentence(item.error)) : el("span", { class: "muted small" }, formatDateTime(item.modified)),
+    ),
+  );
+  const body = [intro, el("div", { class: "stack" }, options)];
+  if (ruler.dirty) {
+    body.push(el("div", { class: "banner warning" }, icon("alert"), el("span", { class: "banner-text" }, "Your unsaved changes in the Rules tab will be lost.")));
+  }
+
+  const choice = await openDialog({ title, body, buttons: [{ text: "Open", value: DIALOG_OPEN, kind: "primary" }] });
+  if (choice !== DIALOG_OPEN) return;
+  const selected = options.map((option) => option.querySelector("input")).find((radio) => radio.checked);
+  if (!selected) return;
+  try {
+    render(await api.post("/api/rules/open", { file_name: selected.value }));
+    showToast(pathText("Rules opened from", ruler.path));
+  } catch (error) {
+    showError(error);
   }
 }
 

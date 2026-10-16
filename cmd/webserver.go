@@ -188,12 +188,16 @@ func (s *webServer) routes() http.Handler {
 	mux.HandleFunc("POST /api/rules/test", s.requireLogin(s.handleTestName))
 	mux.HandleFunc("POST /api/rules/save", s.requireLogin(s.handleSaveRuler))
 	mux.HandleFunc("POST /api/rules/export", s.requireLogin(s.handleExportRuler))
+	mux.HandleFunc("GET /api/rules/uploaded", s.requireLogin(s.handleListUploadedRulers))
+	mux.HandleFunc("POST /api/rules/open", s.requireLogin(s.handleOpenUploadedRuler))
 
 	mux.HandleFunc("GET /api/runs", s.requireLogin(s.handleListRuns))
 	mux.HandleFunc("POST /api/runs", s.requireLogin(s.handleStartRun))
+	mux.HandleFunc("POST /api/runs/check", s.requireLogin(s.handleCheckRun))
 	mux.HandleFunc("POST /api/runs/cancel", s.requireLogin(s.handleCancelRun))
 	mux.HandleFunc("GET /api/runs/results", s.requireLogin(s.handleRunResults))
 	mux.HandleFunc("POST /api/runs/export", s.requireLogin(s.handleExportRun))
+	mux.HandleFunc("POST /api/runs/delete", s.requireLogin(s.handleDeleteRuns))
 
 	mux.HandleFunc("GET /api/files", s.requireLogin(s.handleListFiles))
 	mux.HandleFunc("POST /api/files/upload", s.requireLogin(s.handleUpload))
@@ -276,6 +280,7 @@ func (s *webServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"default_input_file":         defaultInput,
 		"default_server":             s.params.serverName,
 		"default_share":              s.params.shareName,
+		"attributes":                 attributeLegend,
 	})
 }
 

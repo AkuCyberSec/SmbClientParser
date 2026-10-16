@@ -60,9 +60,11 @@
   --control-height: 36px;
   --icon-size: 16px;
   --sidebar-width: 260px;
-  --path-column-min-width: 28rem;
-  --name-column-min-width: 12rem;
   --filter-min-width: 240px;
+  --number-input-width: 7rem;
+  --menu-min-width: 200px;
+  --dialog-list-max-height: 12rem;
+  --column-resizer-width: 8px;
   --progress-height: 6px;
   --content-max-width: 1600px;
   --text-max-width: 70ch;
@@ -71,6 +73,7 @@
 
   /* Stacking order: keep every z-index here */
   --z-header: 10;
+  --z-menu: 30;
   --z-toast: 50;
 }
 
@@ -152,6 +155,16 @@ a {
   color: var(--color-link);
 }
 
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-primary);
+}
+
+/* Headings get focus from the code (tabindex="-1") only so keyboard users don't get lost */
+[tabindex="-1"]:focus {
+  outline: none;
+}
+
 code,
 .mono {
   font-family: var(--font-mono);
@@ -197,6 +210,10 @@ code,
 
 .small {
   font-size: var(--font-size-small);
+}
+
+.nowrap {
+  white-space: nowrap;
 }
 
 /* Long paths wrap anywhere instead of widening the page */
@@ -322,9 +339,30 @@ code,
   font-family: var(--font-mono);
 }
 
-.select.auto-width {
+.select.auto-width,
+.input.auto-width {
   width: auto;
   max-width: 100%;
+}
+
+.input.number-input {
+  width: var(--number-input-width);
+}
+
+.select.unit-select {
+  width: auto;
+}
+
+fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  padding: 0;
+  margin-bottom: var(--space-1);
 }
 
 .input[aria-invalid="true"] {
@@ -535,10 +573,6 @@ code,
   white-space: nowrap;
 }
 
-.table .nowrap {
-  white-space: nowrap;
-}
-
 .table .actions {
   width: 1%;
   white-space: nowrap;
@@ -568,6 +602,139 @@ code,
   padding: var(--space-8) var(--space-4);
   color: var(--color-text-muted);
   text-align: center;
+}
+
+/* Dropdown menus (see dropdownMenu in js/ui.js) */
+.menu {
+  display: inline-block;
+}
+
+.menu > summary {
+  list-style: none;
+}
+
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Placed on the screen by JS (position: fixed), so scrolling containers don't cut it */
+.menu-panel {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: var(--menu-min-width);
+  max-height: 70vh;
+  padding: var(--space-1);
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.2);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: var(--color-surface-muted);
+}
+
+.warning-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--color-warning-text);
+}
+
+/* Lists and choices inside dialogs (e.g. deleting runs) */
+.dialog-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: var(--dialog-list-max-height);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.dialog-list li {
+  display: flex;
+  flex-direction: column;
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color var(--duration), background-color var(--duration);
+}
+
+.choice:hover {
+  border-color: var(--color-border-strong);
+}
+
+.choice:has(input:checked) {
+  border-color: var(--color-primary);
+  background: var(--color-surface-muted);
+}
+
+.choice:has(input:disabled) {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+/* Lines the radio button up with the title */
+.choice input {
+  margin: var(--space-1) 0 0;
+}
+
+.choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+/* Clickable area around a small checkbox, as big as a small button */
+.check-area {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(var(--control-height) - var(--space-2));
+  min-height: calc(var(--control-height) - var(--space-2));
+  cursor: pointer;
+}
+
+.check-area:has(input:disabled) {
+  cursor: not-allowed;
 }
 
 /* Dialog: the browser keeps focus inside and closes it with Escape */
@@ -794,18 +961,158 @@ main {
   color: var(--color-text-muted);
 }
 
-/* The path is the most important column: keep it readable, the table scrolls sideways if needed */
-.table .path-column {
-  min-width: var(--path-column-min-width);
+.filter-group {
+  min-width: min(100%, var(--filter-min-width));
 }
 
-.table .name-column {
-  min-width: var(--name-column-min-width);
+.filters-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+
+.filters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--filter-min-width), 1fr));
+  gap: var(--space-4);
+}
+
+.attributes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--menu-min-width), 1fr));
+  gap: var(--space-2) var(--space-4);
+}
+
+.attribute-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.attribute-filter label {
+  flex: 1;
+}
+
+.attribute-letter {
+  display: inline-block;
+  min-width: 1.5em;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* Attribute legend under the results table */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-small);
+}
+
+.legend-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+
+.legend-list div {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.legend-list dt {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.legend-list dd {
+  margin: 0;
+}
+
+/* Results table: fixed column widths (set by js/results-columns.js), cells wrap inside their column */
+.results-table {
+  table-layout: fixed;
+}
+
+.results-table td {
   overflow-wrap: anywhere;
 }
 
-.filter-group {
-  min-width: min(100%, var(--filter-min-width));
+.results-table th {
+  position: relative;
+  cursor: grab;
+}
+
+.results-table th.dragging {
+  opacity: 0.5;
+}
+
+.results-table th.drop-target {
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--column-resizer-width);
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.column-resizer:hover,
+.column-resizer:focus-visible {
+  background: var(--color-primary);
+}
+
+.columns-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+.columns-menu-item label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+/* Clicking the path copies it */
+.path-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.path-copy {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.path-copy:hover {
+  color: var(--color-link);
+  text-decoration: underline;
 }
 
 .pagination {

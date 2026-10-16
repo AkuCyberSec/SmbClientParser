@@ -239,6 +239,10 @@ func (s *webServer) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cannot rename %s: %v", oldPath, err))
 		return
 	}
+	if folder.id == downloadsFolderID {
+		// The renamed file (and the one it replaced) no longer belong to a run
+		s.forgetExports(request.Name, request.NewName)
+	}
 	s.activity.add(levelInfo, "File renamed: %s -> %s", oldPath, newPath)
 	writeJSON(w, http.StatusOK, map[string]string{"name": request.NewName, "path": newPath})
 }
@@ -264,6 +268,9 @@ func (s *webServer) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	if err := os.Remove(path); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("cannot delete %s: %v", path, err))
 		return
+	}
+	if folder.id == downloadsFolderID {
+		s.forgetExports(request.Name)
 	}
 	s.activity.add(levelWarning, "File deleted: %s", path)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

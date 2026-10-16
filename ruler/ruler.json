@@ -85,7 +85,7 @@
 					"name": "Disks",
 					"regexp": "(?i)\\.(avhd|avhdx|bin|dd|dmg|esd|ffu|hdd|img|iso|pvm|qcow|qcow2|qed|raw|sparsebundle|sparseimage|squashfs|swm|vdi|vfat|vhd|vhdset|vhdx|vma|vma.gz|vma.lzo|vma.zst|vmdk|vpc|wim)$",
 					"enabled": true,
-					"is_default_rule": true
+					"is_default_rule": false
 				}
 			},
 			"enabled": true,
@@ -103,6 +103,25 @@
 				"Logins": {
 					"name": "Logins",
 					"regexp": "(?i)^(logins\\.json|signons\\.sqlite)$",
+					"enabled": true,
+					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		},
+		"Folders": {
+			"group": "Folders",
+			"rules": {
+				"Default Folders": {
+					"name": "Default Folders",
+					"regexp": "(?i)(\\|/)(desktop|documents|one drive|www|powershell|\\.ssh)$",
+					"enabled": true,
+					"is_default_rule": false
+				},
+				"Interesting Folders": {
+					"name": "Interesting Folders",
+					"regexp": "(?i)(notepad\\+\\+|filezilla)$",
 					"enabled": true,
 					"is_default_rule": false
 				}

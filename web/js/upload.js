@@ -1,6 +1,13 @@
 // Uploading a file to the upload folder, used by the Runs and Files tabs.
 import { api, uploadFile, withQuery } from "./api.js";
-import { confirmAction, formatSize, pathMessage, showError, showToast } from "./ui.js";
+import {
+  confirmAction,
+  formatSize,
+  pathMessage,
+  pathText,
+  showError,
+  showToast,
+} from "./ui.js";
 
 /**
  * Uploads a file chosen by the user, asking before overwriting an existing one.
@@ -37,7 +44,7 @@ export async function uploadWithConfirmation(file, progressBox) {
 
   try {
     const uploaded = await uploadFile(file, overwrite, showProgress);
-    showToast(`Uploaded to ${uploaded.path}`);
+    showToast(pathText("Uploaded to", uploaded.path));
     return uploaded;
   } catch (error) {
     showError(error);

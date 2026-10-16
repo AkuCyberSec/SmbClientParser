@@ -12,6 +12,7 @@ import {
   formatSize,
   openTab,
   pathMessage,
+  pathText,
   showError,
   showToast,
   startBrowserDownload,
@@ -91,7 +92,7 @@ function renderFileRow(folder, file) {
         onClick: () => {
           runsTab.useInputFile(file.path);
           openTab("runs");
-          showToast(`Input file set to ${file.path}`);
+          showToast(pathText("Input file set to", file.path));
         },
       }),
     );
@@ -155,7 +156,7 @@ async function deleteFile(folder, file) {
   if (!confirmed) return;
   try {
     await api.post("/api/files/delete", { folder, name: file.name });
-    showToast(`Deleted ${file.path}`);
+    showToast(pathText("Deleted", file.path));
     loadFolder(folder);
   } catch (error) {
     showError(error);
