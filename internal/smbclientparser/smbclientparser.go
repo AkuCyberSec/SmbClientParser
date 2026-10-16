@@ -33,11 +33,12 @@ type SmbClientParser struct {
 	folders map[string]*smbclientresource.SmbClientFolder
 	// Track the empty dirs immediately so that we can easily remove them from "Directories"
 	emptyDirs map[string]*smbclientresource.SmbClientDir
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	finalized bool
 }
 
 func New(filePath string, server string, shareName string, parsingRuler *parsingruler.ParsingRuler) *SmbClientParser {
+	var threadId int = 0
 	s := &SmbClientParser{
 		FilePath:     filePath,
 		Directories:  make(map[string]*smbclientresource.SmbClientDir),
@@ -51,29 +52,50 @@ func New(filePath string, server string, shareName string, parsingRuler *parsing
 
 	s.rootDir = smbclientresource.NewDir(shareName)
 	s.rootDir.SetBasePath(fmt.Sprintf("%s%s", parsingRuler.SharePrefix(), server))
-	s.AddDir(s.rootDir)
+	s.AddDir(s.rootDir, threadId)
 
 	return s
 }
 
-func (s *SmbClientParser) AddDir(dir *smbclientresource.SmbClientDir) {
+func (s *SmbClientParser) AddDir(dir *smbclientresource.SmbClientDir, threadId int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.Directories[dir.GetFullPath()]
 	if !ok {
+		log.
+			Debug().
+			Str("full_path", dir.GetFullPath()).
+			Int("thread_id", threadId).
+			Msg("adding directory")
 		s.Directories[dir.GetFullPath()] = dir
 		s.emptyDirs[dir.GetFullPath()] = dir
 	}
 }
-func (s *SmbClientParser) AddEntry(currentPath string, entry smbclientresource.SmbClientEntry, matchedRule *parsingruler.ParsingRule) {
+func (s *SmbClientParser) AddEntry(entry smbclientresource.SmbClientEntry, matchedRule *parsingruler.ParsingRule, threadId int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry == nil {
-		log.Fatal().Msg("unexpected error: file cannot be nil")
+		log.
+			Fatal().
+			Int("thread_id", threadId).
+			Msg("unexpected error: file cannot be nil")
 	}
-	existingDir, ok := s.Directories[currentPath]
+	log.
+		Debug().
+		Int("thread_id", threadId).
+		Str("current_path", entry.GetBasePath()).
+		Str("entry_name", entry.GetName()).
+		Msg("adding entry to directory")
+
+	existingDir, ok := s.Directories[entry.GetBasePath()]
 	if !ok {
-		log.Fatal().Str("dir_name", currentPath).Str("file_name", entry.GetName()).Msg("unexpected error: cannot add file to directory because it doesn't exist")
+
+		log.
+			Fatal().
+			Str("dir_name", entry.GetBasePath()).
+			Str("file_name", entry.GetName()).
+			Int("thread_id", threadId).
+			Msg("unexpected error: cannot add file to directory because it doesn't exist")
 	}
 	existingDir.AddEntry(entry)
 
@@ -82,7 +104,7 @@ func (s *SmbClientParser) AddEntry(currentPath string, entry smbclientresource.S
 		s.folders[entry.GetFullPath()] = entry.(*smbclientresource.SmbClientFolder)
 	}
 	if !existingDir.IsAlreadyDeletedFromEmptyDirsList() {
-		delete(s.emptyDirs, currentPath)
+		delete(s.emptyDirs, entry.GetBasePath())
 		existingDir.SetAsDeletedFromEmptyDirstList()
 	}
 }
@@ -104,6 +126,7 @@ func (s *SmbClientParser) Finalize() *SmbClientParser {
 	if s.finalized {
 		return s
 	}
+	log.Info().Msg("finalizing")
 
 	for _, folder := range s.folders {
 		dir, ok := s.Directories[folder.GetFullPath()]
@@ -142,6 +165,14 @@ func (s *SmbClientParser) ExportJson(outFile string) error {
 func (s *SmbClientParser) ExportGrouped(outFile string, showGroupName, showRuleName, showEmpty bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	log.
+		Info().
+		Str("output_file", outFile).
+		Bool("show_group_name", showGroupName).
+		Bool("show_rule_name", showRuleName).
+		Bool("show_empty", showEmpty).
+		Msg("exporting file")
+
 	handle, err := os.Create(outFile)
 	if err != nil {
 		return err
@@ -156,8 +187,18 @@ func (s *SmbClientParser) ExportGrouped(outFile string, showGroupName, showRuleN
 		}
 
 		if !showEmpty && !grp.AnyMatch() {
+			log.
+				Debug().
+				Str("group_name", grpName).
+				Msg("skipping exporting empty group")
 			continue
 		}
+		log.
+			Debug().
+			Str("group_name", grpName).
+			Bool("any_match", grp.AnyMatch()).
+			Msg("exporting group")
+
 		if showGroupName {
 			for range len(grpName) {
 				fmt.Fprintf(wr, "=")
@@ -176,7 +217,28 @@ func (s *SmbClientParser) ExportGrouped(outFile string, showGroupName, showRuleN
 			}
 
 			if !showEmpty && !rule.AnyMatch() {
+				log.
+					Debug().
+					Str("group_name", ruleName).
+					Msg("skipping exporting empty rule")
 				continue
+			}
+
+			matchesNumber := rule.MatchesNumber()
+			log.
+				Debug().
+				Str("rule_name", ruleName).
+				Bool("any_match", rule.AnyMatch()).
+				Int("number_of_entries", rule.MatchesNumber()).
+				Msg("exporting rule")
+
+			if matchesNumber > 0 {
+				log.
+					Info().
+					Str("rule_name", ruleName).
+					Str("group_name", grpName).
+					Int("number_of_entries", matchesNumber).
+					Msg("exporting rule")
 			}
 			if showRuleName {
 				fmt.Fprintf(wr, "[%s (expr: %s)]\n", ruleName, rule.Expression)
@@ -195,8 +257,14 @@ func (s *SmbClientParser) ExportGrouped(outFile string, showGroupName, showRuleN
 		wr.WriteString("\n")
 	}
 
+	log.
+		Info().
+		Msg("saving file")
 	if err = wr.Flush(); err != nil {
 		return err
 	}
+	log.
+		Info().
+		Msg("file saved")
 	return nil
 }

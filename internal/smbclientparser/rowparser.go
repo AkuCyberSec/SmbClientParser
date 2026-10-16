@@ -26,13 +26,12 @@ func newRowParser(parsingRuler *parsingruler.ParsingRuler) *RowParser {
 // If the resource is a directory or a file, it returns SmbClientResource.
 //
 // Otherwise, it returns nil.
-func (r *RowParser) Parse(sharePath, currentPath string, row []byte) SmbClientObject {
+func (r *RowParser) Parse(row []byte) SmbClientObject {
 	rowStr := strings.Trim(string(row), " ")
 	rowStr, _ = strings.CutSuffix(rowStr, "\n")
 
 	newDir, ok := r.parsingRuler.IsRowDir(rowStr)
 	if ok {
-		newDir.SetBasePath(sharePath)
 		return newDir
 	}
 
@@ -42,7 +41,6 @@ func (r *RowParser) Parse(sharePath, currentPath string, row []byte) SmbClientOb
 		if entry.GetName() == "." || entry.GetName() == ".." {
 			return nil
 		}
-		entry.SetBasePath(currentPath)
 		return entry
 	}
 	return nil

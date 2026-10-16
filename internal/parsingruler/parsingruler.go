@@ -98,6 +98,7 @@ func Load(inFile string) (*ParsingRuler, error) {
 		for ruleName, rule := range grp.Rules {
 			grp.sortedRuleNames = append(grp.sortedRuleNames, ruleName)
 			rule.sortedMatchedEntryNames = make([]string, 0)
+			rule.group = grp
 		}
 	}
 	ruler.addDefaultGroup()
@@ -116,6 +117,9 @@ func newParsingRuleGroup(name string, enabled bool) *ParsingRuleGroup {
 	return g
 }
 func newParsingRule(name string, expr string, enabled bool, group *ParsingRuleGroup) *ParsingRule {
+	if group == nil {
+		log.Fatal().Str("rule_name", name).Msg("fatal error: group cannot be nil")
+	}
 	return &ParsingRule{
 		Name:                    name,
 		Expression:              expr,
@@ -237,17 +241,23 @@ func (p *ParsingRuler) IsRowDir(row string) (*smbclientresource.SmbClientDir, bo
 
 }
 
-func (p *ParsingRuler) MatchRule(val string) (matchedRule *ParsingRule, matches bool) {
+func (p *ParsingRuler) MatchRule(val string) (matchedRule *ParsingRule, matched bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	ignoreDefaultRule := len(p.RuleGroups) > 1
 
 	for _, grp := range p.RuleGroups {
+		if !grp.Enabled {
+			continue
+		}
 		if grp.IsDefaultGroup && ignoreDefaultRule {
 			continue
 		}
 		for _, rule := range grp.Rules {
+			if !rule.Enabled {
+				continue
+			}
 			if rule.expression == nil {
 				rule.expression = regexp.MustCompile(rule.Expression)
 			}
@@ -433,12 +443,20 @@ func (p *ParsingRule) SetExpression(expr string) {
 	p.Expression = expr
 }
 func (p *ParsingRule) Group() *ParsingRuleGroup {
+	if p.group == nil {
+		log.Fatal().Str("rule_name", p.Name).Msg("fatal error: group is nil")
+	}
 	return p.group
 }
 func (p *ParsingRule) AnyMatch() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.matchedEntries) > 0
+}
+func (p *ParsingRule) MatchesNumber() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.matchedEntries)
 }
 func (p *ParsingRule) AddMatchedEntry(entry smbclientresource.SmbClientEntry) {
 	p.mu.Lock()

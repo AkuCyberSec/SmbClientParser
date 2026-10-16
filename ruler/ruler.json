@@ -19,7 +19,7 @@
 			"rules": {
 				"Known config files": {
 					"name": "Known config files",
-					"regexp": "(?i)^(web\\.config|(application|application\\.development|application\\.production)\\.json|)$",
+					"regexp": "(?i)^((web\\.config)|(appsettings|appsettings\\.development|appsettings\\.production)\\.json)$",
 					"enabled": true,
 					"is_default_rule": false
 				}
@@ -32,7 +32,7 @@
 			"rules": {
 				"Access Credentials": {
 					"name": "Access Credentials",
-					"regexp": "(?i)(accessi|login|utenti|user|credentials|credenziali).+\\.(txt|pdf|docx|xls|xlsx)",
+					"regexp": "(?i)(accessi|login|utenti|user|usr|logon|creds|credentials|credenziali).+\\.(txt|pdf|docx|xls|xlsx)$",
 					"enabled": true,
 					"is_default_rule": false
 				},
@@ -60,6 +60,32 @@
 					"regexp": "(?i)^(ConsoleHost_history\\.txt|\\.bash_history|\\.ash_history|\\.zsh_history)$",
 					"enabled": true,
 					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		},
+		"Scripts": {
+			"group": "Scripts",
+			"rules": {
+				"Terminal": {
+					"name": "Terminal",
+					"regexp": "(?i)\\.(ps1|cmd|bat|sh)$",
+					"enabled": true,
+					"is_default_rule": false
+				}
+			},
+			"enabled": true,
+			"is_default_group": false
+		},
+		"Backup": {
+			"group": "Backup",
+			"rules": {
+				"Disks": {
+					"name": "Disks",
+					"regexp": "(?i)\\.(avhd|avhdx|bin|dd|dmg|esd|ffu|hdd|img|iso|pvm|qcow|qcow2|qed|raw|sparsebundle|sparseimage|squashfs|swm|vdi|vfat|vhd|vhdset|vhdx|vma|vma.gz|vma.lzo|vma.zst|vmdk|vpc|wim)$",
+					"enabled": true,
+					"is_default_rule": true
 				}
 			},
 			"enabled": true,

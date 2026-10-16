@@ -168,6 +168,9 @@ func (s *SmbClientBaseEntry) GetName() string {
 func (s *SmbClientBaseEntry) IsDir() bool {
 	return false
 }
+func (s *SmbClientBaseEntry) GetBasePath() string {
+	return s.basePath
+}
 func (s *SmbClientBaseEntry) SetBasePath(basePath string) {
 	s.basePath = basePath
 }
